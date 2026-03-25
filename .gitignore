@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.ralph/runs/
+*.tsbuildinfo
+
+# Credentials & secrets
+.env
+.env.*
+.npmrc
+*.pem
+*.key
+credentials.json

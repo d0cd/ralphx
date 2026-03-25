@@ -1,0 +1,49 @@
+{
+  "name": "ralphx",
+  "version": "0.1.0",
+  "description": "Safe, resumable autonomous coding loop for AI coding agents",
+  "type": "module",
+  "main": "dist/cli/index.js",
+  "files": [
+    "dist"
+  ],
+  "bin": {
+    "ralph": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc && cp src/cost/models.json dist/cost/models.json && chmod +x dist/cli/index.js",
+    "dev": "tsx src/cli/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/d0cd/ralph.git"
+  },
+  "keywords": [
+    "ai",
+    "autonomous",
+    "coding-loop",
+    "claude",
+    "agent",
+    "cli"
+  ],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/d0cd/ralph/issues"
+  },
+  "homepage": "https://github.com/d0cd/ralph#readme",
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.1"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.81",
+    "commander": "^14.0.3",
+    "zod": "^4.3.6"
+  }
+}

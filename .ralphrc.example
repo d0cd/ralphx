@@ -1,0 +1,13 @@
+{
+  "agent": "claude-code",
+  "contextMode": "continue",
+  "timeoutMinutes": 20,
+  "maxIterations": 50,
+  "maxCostUsd": 10.0,
+  "warnCostUsd": 7.0,
+  "cbNoProgressThreshold": 3,
+  "cbSameErrorThreshold": 4,
+  "cbCooldownMinutes": 15,
+  "claimTtlMinutes": 45,
+  "verbose": false
+}

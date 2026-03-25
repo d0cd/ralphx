@@ -1,0 +1,203 @@
+{
+  "version": "2.0",
+  "projectName": "ralph-next-convergent-audit",
+  "stories": [
+    {
+      "id": "bugs",
+      "title": "Bugs and logic errors",
+      "description": "Find logic errors, incorrect conditions, wrong return values, off-by-one errors, and code that doesn't do what its name promises.",
+      "acceptanceCriteria": [
+        "No function returns wrong results for valid inputs",
+        "No condition is inverted or missing a case",
+        "Error paths are reachable and behave correctly",
+        "Edge cases (empty input, null, boundary values) are handled"
+      ],
+      "priority": 1,
+      "group": 1,
+      "status": "active",
+      "passes": false
+    },
+    {
+      "id": "error-handling",
+      "title": "Error handling completeness",
+      "description": "Every file I/O, process spawn, and external call must handle failures. No operation should crash the process with an unhandled exception.",
+      "acceptanceCriteria": [
+        "All readFileSync/writeFileSync/renameSync/unlinkSync in try-catch",
+        "All execSync/spawn calls handle failures gracefully",
+        "Error messages include operation context (what failed and where)",
+        "Best-effort operations are documented (won't crash on failure)"
+      ],
+      "priority": 2,
+      "group": 1,
+      "status": "active",
+      "passes": false,
+      "consecutiveFailures": 1,
+      "lastError": "Quality gates failed: test"
+    },
+    {
+      "id": "test-coverage",
+      "title": "Test coverage and quality",
+      "description": "Every exported function needs tests. Critical paths (convergence, round execution, parallel groups, claim release, state flush) need edge case coverage.",
+      "acceptanceCriteria": [
+        "Every exported function in src/ has at least one test",
+        "Convergent loop behavior tested: re-evaluation, regression detection, convergence exit, no_progress exit",
+        "Parallel group execution tested: stories in same group run concurrently",
+        "Edge cases: empty PRD, corrupt JSON, missing files, concurrent access"
+      ],
+      "priority": 3,
+      "group": 1,
+      "status": "active",
+      "passes": false
+    },
+    {
+      "id": "types",
+      "title": "Type safety",
+      "description": "No unnecessary any types, no unsafe type assertions. Zod schemas match TypeScript interfaces. All config fields are actually used.",
+      "acceptanceCriteria": [
+        "tsc --noEmit passes clean",
+        "No 'any' or 'as any' in src/ (tests are ok)",
+        "Every RalphConfig field is read somewhere in the codebase",
+        "Zod schema defaults match what the code assumes"
+      ],
+      "priority": 4,
+      "group": 1,
+      "status": "active",
+      "passes": true,
+      "consecutiveFailures": 0
+    },
+    {
+      "id": "docs",
+      "title": "Documentation accuracy",
+      "description": "CLAUDE.md, DESIGN.md, and PLAN.md must match the actual codebase. File paths, CLI commands, architecture descriptions, and type definitions must be accurate.",
+      "acceptanceCriteria": [
+        "CLAUDE.md source tree matches actual files on disk",
+        "All CLI commands in docs exist in src/cli/index.ts with matching flags",
+        "Architecture descriptions match code (convergent model, group parallelism, two loop modes)",
+        "No references to removed or renamed features"
+      ],
+      "priority": 5,
+      "group": 1,
+      "status": "active",
+      "passes": false,
+      "consecutiveFailures": 1,
+      "lastError": "Quality gates failed: typecheck, test"
+    },
+    {
+      "id": "dead-code",
+      "title": "Dead code and unused exports",
+      "description": "No unused imports, no orphaned files, no exported functions that nothing imports. Every module should be reachable from the CLI entry point or tests.",
+      "acceptanceCriteria": [
+        "No unused imports in any src/ file",
+        "No exported function that is never imported (in src/ or tests/)",
+        "No files in src/ that are never imported by anything",
+        "npm test passes after any removals"
+      ],
+      "priority": 6,
+      "group": 1,
+      "status": "active",
+      "passes": false
+    },
+    {
+      "id": "consistency",
+      "title": "Interface and type consistency",
+      "description": "Types should match their usage. Interfaces should be fully implemented. The same concept should not be represented differently in different places.",
+      "acceptanceCriteria": [
+        "IAgent interface is fully implemented by ClaudeCodeAgent",
+        "All RunState fields are populated by StateWriter at appropriate times",
+        "IterationRecord fields match what the loop actually records",
+        "Story type matches what loadPrd returns and what the loop consumes",
+        "ExitReason values are all reachable from the loop"
+      ],
+      "priority": 7,
+      "group": 1,
+      "status": "active",
+      "passes": false
+    },
+    {
+      "id": "simplification",
+      "title": "Unnecessary complexity",
+      "description": "Find code that is more complex than needed. Duplicate logic, abstractions wrapping one implementation, config fields with no effect, features that could be removed.",
+      "acceptanceCriteria": [
+        "No duplicate logic across modules",
+        "No wrapper abstractions that add no value",
+        "No config fields that are never read",
+        "No utility functions used only once that could be inlined"
+      ],
+      "priority": 8,
+      "group": 1,
+      "status": "active",
+      "passes": false
+    },
+    {
+      "id": "methodology",
+      "title": "Convergence methodology soundness",
+      "description": "Verify the convergent loop actually converges correctly. Check that: group parallelism works, re-evaluation catches regressions, backlog vs convergent modes behave differently, per-story CB works, maxRounds limits rounds not iterations.",
+      "acceptanceCriteria": [
+        "Convergent mode re-runs all stories each round (not just failing ones)",
+        "Backlog mode only runs failing stories",
+        "Group parallelism: stories in same group run via Promise.all",
+        "Re-evaluation at round start flips regressions back to passes=false",
+        "maxRounds limits rounds, maxIterations limits total agent calls",
+        "Per-story consecutiveFailures skips stuck stories",
+        "The loop can actually reach 'converged' exit (not just max_iterations)"
+      ],
+      "priority": 9,
+      "group": 1,
+      "status": "active",
+      "passes": false
+    },
+    {
+      "id": "build",
+      "title": "Build, packaging, and runtime",
+      "description": "The project builds, the CLI works, dependencies are correct, .gitignore is complete. The tool can actually be invoked end-to-end.",
+      "acceptanceCriteria": [
+        "npm run build succeeds",
+        "dist/cli/index.js has shebang and is executable",
+        "package.json bin/main entries are correct",
+        "No unnecessary dependencies",
+        ".gitignore covers node_modules, dist, .ralph/runs, tsbuildinfo"
+      ],
+      "priority": 10,
+      "group": 1,
+      "status": "active",
+      "passes": true,
+      "consecutiveFailures": 0
+    },
+    {
+      "id": "security",
+      "title": "Security and safety guardrails",
+      "description": "Protected paths are enforced. Budget limits actually stop the loop. The circuit breaker actually trips. No way to bypass safety mechanisms.",
+      "acceptanceCriteria": [
+        "Protected path validation cannot be bypassed by the agent",
+        "maxCostUsd and maxTokensSession actually stop the loop mid-round",
+        "Circuit breaker trips after configured threshold and is checked between stories",
+        "No file operations outside the project directory",
+        "Claims file locking prevents race conditions"
+      ],
+      "priority": 11,
+      "group": 1,
+      "status": "active",
+      "passes": false
+    },
+    {
+      "id": "resilience",
+      "title": "Crash recovery and state durability",
+      "description": "If the process crashes, state should be recoverable. Atomic writes should prevent corruption. Stale claims should be cleaned up. Resume should work.",
+      "acceptanceCriteria": [
+        "State writer uses atomic temp+rename for all writes",
+        "Stale claims (dead PID, expired heartbeat) are pruned on next access",
+        "resume correctly finds interrupted/paused runs",
+        "Signal handler registers for SIGINT/SIGTERM and triggers graceful shutdown",
+        "Best-effort status update on crash path"
+      ],
+      "priority": 12,
+      "group": 1,
+      "status": "active",
+      "passes": false
+    }
+  ],
+  "qualityGates": {
+    "typecheck": "npx tsc --noEmit",
+    "test": "npx vitest run"
+  }
+}
