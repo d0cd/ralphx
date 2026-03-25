@@ -1,7 +1,10 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { isPidAlive } from '../sync/pid-utils.js';
 import type { RunState, RunStatus } from '../types/state.js';
+
+function isPidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
 
 const RESUMABLE_STATUSES: Set<RunStatus> = new Set(['interrupted', 'paused']);
 

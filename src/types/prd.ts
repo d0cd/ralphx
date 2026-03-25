@@ -6,7 +6,6 @@ export interface Story {
   description: string;
   acceptanceCriteria: string[];
   priority: number;
-  group?: number;
   status: StoryStatus;
   passes: boolean;
   consecutiveFailures?: number;
@@ -22,16 +21,4 @@ export interface PRD {
     lint?: string;
     test?: string;
   };
-}
-
-export interface StoryClaim {
-  storyId: string;
-  runId: string;
-  claimedAt: string;
-  heartbeatAt: string;
-  pid: number;
-}
-
-export interface ClaimsFile {
-  claims: StoryClaim[];
 }

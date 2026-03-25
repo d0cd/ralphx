@@ -65,32 +65,6 @@ export function getFailingStories(prd: PRD, maxConsecutiveFailures?: number): St
     .sort((a, b) => a.priority - b.priority);
 }
 
-/**
- * Group stories by their `group` field for parallel execution.
- * Stories in the same group run in parallel. Groups run sequentially (lower group first).
- * Stories without a group field default to their priority (sequential).
- */
-export function groupStories(stories: Story[]): Story[][] {
-  const grouped = new Map<number, Story[]>();
-
-  for (const story of stories) {
-    const group = story.group ?? story.priority;
-    if (!grouped.has(group)) grouped.set(group, []);
-    grouped.get(group)!.push(story);
-  }
-
-  // Sort groups by group number, return as array of arrays
-  return Array.from(grouped.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([_, stories]) => stories);
-}
-
-/** Get next failing story not in the exclude set */
-export function getNextStory(prd: PRD, excludeIds: Set<string> = new Set(), maxConsecutiveFailures?: number): Story | null {
-  const candidates = getFailingStories(prd, maxConsecutiveFailures).filter(s => !excludeIds.has(s.id));
-  return candidates[0] ?? null;
-}
-
 /** Check if all active stories pass */
 export function allStoriesPass(prd: PRD): boolean {
   const active = prd.stories.filter(s => s.status === 'active');

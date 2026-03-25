@@ -133,7 +133,7 @@ Concrete tasks organized by phase. Each task lists what to build, what tests to 
 **Build:**
 - `src/core/loop.ts` — `RalphLoop` class
   - Constructor takes config, agent, state writer
-  - `run()` method: main loop per design section 24
+  - `run()` method: main loop per design
   - Check exit conditions each iteration
   - Call agent, record iteration, validate (stub validator for now)
   - Return `LoopResult` with final state and exit reason
@@ -153,7 +153,7 @@ Concrete tasks organized by phase. Each task lists what to build, what tests to 
 ### Task 1.8: Basic CLI (`run`, `status`, `logs`)
 
 **Build:**
-- `src/cli/index.ts` — CLI entry point (use `commander` or similar)
+- `src/cli/index.ts` — CLI entry point (use `commander`)
 - `ralph run` — create run, start loop
 - `ralph status` — read latest or specified run-state.json, print summary
 - `ralph logs` — tail loop.log for latest or specified run
@@ -278,24 +278,24 @@ Before starting Phase 2, audit all Phase 1 code for production readiness:
 
 ---
 
-### Task 2.5: Exit Detector
+### Task 2.5: Exit Detection
 
 **Build:**
-- `src/core/exit-detector.ts`
-  - Evaluate all exit conditions: all tasks done, max iterations, budget, CB terminal, signal, repeated validation failures
+- Exit conditions evaluated in the loop:
+  - All tasks done, max iterations, budget, CB terminal, signal, repeated validation failures
   - Return `ExitReason | null`
 
 **Tests:**
-- `exit-detector.test.ts`:
+- Exit detection tests:
   - Returns `null` when no exit condition met
-  - Returns `'all_tasks_complete'` when all stories done
+  - Returns `'converged'` when all stories pass
   - Returns `'max_iterations'` at limit
   - Returns `'budget_exceeded'` when cost over max
   - Returns `'circuit_breaker_terminal'` when CB is terminal
   - Returns `'interrupted'` when stop requested
   - Returns `'validation_failed_repeatedly'` after N consecutive failures
 
-**Done when:** Exit detector correctly identifies all exit conditions.
+**Done when:** Exit detection correctly identifies all exit conditions.
 
 ---
 
@@ -304,131 +304,16 @@ Before starting Phase 2, audit all Phase 1 code for production readiness:
 Before starting Phase 3, audit all Phase 2 code for production readiness using the same criteria as Phase 1 audit gate, plus:
 
 - **Safety invariants hold:** Budget limits actually stop the loop. CB actually trips. Protected paths actually block completion.
-- **Integration between modules:** Validator, CB, exit detector, and cost tracker are wired into the loop correctly.
+- **Integration between modules:** Validator, CB, exit detection, and cost tracker are wired into the loop correctly.
 - **No hardcoded TODOs in critical paths:** Cost calculation must use real estimates, not zero.
 
 **Done when:** All issues resolved, full test suite passes, build is clean.
 
 ---
 
-## Phase 3 — Lightweight Same-Repo Concurrency
+## Phase 3 — Polish
 
-### Task 3.1: File Lock
-
-**Build:**
-- `src/sync/file-lock.ts`
-  - `acquireLock(path, timeoutMs)` — create lockfile atomically (O_EXCL)
-  - `releaseLock(path)` — remove lockfile
-  - Retry with backoff up to timeout
-  - Stale lock detection (check PID in lockfile)
-
-**Tests:**
-- `file-lock.test.ts`:
-  - Acquire succeeds when no lock exists
-  - Acquire blocks then succeeds when lock released
-  - Acquire fails after timeout when lock held
-  - Release removes lockfile
-  - Stale lock (dead PID) is recovered
-  - Two concurrent acquires — only one succeeds, other waits
-
-**Done when:** File lock works for single-machine concurrency.
-
----
-
-### Task 3.2: Claims Manager
-
-**Build:**
-- `src/prd/claims.ts`
-  - `claimNextStory(runId, prdPath, claimsPath)` — lock, read, prune stale, find best story, write claim, unlock
-  - `releaseStory(storyId, runId)` — lock, remove claim, unlock
-  - `heartbeat(storyId, runId)` — update heartbeatAt
-  - `pruneStale(ttlMinutes)` — remove claims with dead PID or expired heartbeat
-
-**Tests:**
-- `claims.test.ts`:
-  - Claims highest-priority todo story
-  - Skips already-claimed stories
-  - Skips done stories
-  - Prunes claim with dead PID
-  - Prunes claim with expired heartbeat
-  - Two concurrent claims get different stories (actual concurrent test)
-  - Release removes claim from file
-  - Heartbeat updates timestamp
-  - Empty PRD returns null
-  - All stories done returns null
-
-**Done when:** Claims correctly coordinate story assignment between runs.
-
----
-
-### Task 3.3: PRD Tracker
-
-**Build:**
-- `src/prd/tracker.ts`
-  - `loadPrd(path)` — read and validate prd.json
-  - `markStoryDone(path, storyId)` — atomically update story status
-  - `getNextStory(prd, excludeIds)` — highest priority todo story not in excludeIds
-
-**Tests:**
-- `tracker.test.ts`:
-  - Loads valid PRD
-  - Rejects invalid PRD (missing required fields)
-  - `getNextStory` returns highest priority
-  - `getNextStory` skips excluded IDs
-  - `getNextStory` returns null when all done
-  - `markStoryDone` updates status and sets completedAt
-
-**Done when:** PRD operations work correctly.
-
----
-
-### Task 3.4: Resume
-
-**Build:**
-- `src/core/resume.ts`
-  - `findResumableRun(runId)` — load run-state.json, verify status is `interrupted` or `paused`
-  - `resumeRun(runId)` — restore state, verify claim still valid, continue loop
-
-**Tests:**
-- `resume.test.ts`:
-  - Resumes interrupted run from correct iteration
-  - Resumes paused run
-  - Fails to resume completed run
-  - Fails to resume if claim expired
-  - Restores cost totals from previous state
-
-**Done when:** Resume continues from prior state correctly.
-
----
-
-### Task 3.5: Concurrency Integration Tests
-
-**Tests:**
-- `concurrency.integration.test.ts`:
-  - Two loops start simultaneously, each gets a different story
-  - One loop crashes, other loop eventually reclaims its story
-  - Loop finishes story, next iteration claims new story
-  - Three loops exhaust all stories, each exits cleanly
-
-**Done when:** Multi-loop coordination works end-to-end.
-
----
-
-### Phase 3 Audit Gate
-
-Before starting Phase 4, audit all Phase 3 code for production readiness using prior audit criteria, plus:
-
-- **Concurrency correctness:** File locks are always released (even on error). Claims are always cleaned up. No deadlocks possible.
-- **Race condition tests:** Concurrent claim tests actually exercise timing, not just sequential execution.
-- **Stale state cleanup:** Crashed processes don't leave permanent locks or claims.
-
-**Done when:** All issues resolved, full test suite passes (including concurrency integration tests), build is clean.
-
----
-
-## Phase 4 — Polish
-
-### Task 4.1: Fresh Context Mode
+### Task 3.1: Fresh Context Mode
 
 **Build:**
 - `src/context/strategies.ts`
@@ -446,7 +331,7 @@ Before starting Phase 4, audit all Phase 3 code for production readiness using p
 
 ---
 
-### Task 4.2: Hint Injection
+### Task 3.2: Hint Injection
 
 **Build:**
 - In loop: before building prompt, check for `.ralph/runs/{runId}/hint.md`
@@ -463,7 +348,7 @@ Before starting Phase 4, audit all Phase 3 code for production readiness using p
 
 ---
 
-### Task 4.3: Dry Run
+### Task 3.3: Dry Run
 
 **Build:**
 - `ralph dry-run` — run full setup (config, PRD load, agent validation, prompt build) but do not invoke agent
@@ -478,7 +363,25 @@ Before starting Phase 4, audit all Phase 3 code for production readiness using p
 
 ---
 
-### Task 4.4: Remaining CLI Commands
+### Task 3.4: Resume
+
+**Build:**
+- `src/core/resume.ts`
+  - `findResumableRun(runId)` — load run-state.json, verify status is `interrupted` or `paused`
+  - `resumeRun(runId)` — restore state, continue loop
+
+**Tests:**
+- `resume.test.ts`:
+  - Resumes interrupted run from correct iteration
+  - Resumes paused run
+  - Fails to resume completed run
+  - Restores cost totals from previous state
+
+**Done when:** Resume continues from prior state correctly.
+
+---
+
+### Task 3.5: Remaining CLI Commands
 
 **Build:**
 - `ralph cost` — print cost summary from run state
@@ -499,7 +402,23 @@ Before starting Phase 4, audit all Phase 3 code for production readiness using p
 
 ---
 
-### Task 4.5: Log and Error Message Quality
+### Task 3.6: Workflow Templates
+
+**Build:**
+- `src/workflow/manager.ts`
+  - `saveWorkflow(name, projectDir)` — save .ralph/ config as reusable workflow
+  - `useWorkflow(name, projectDir)` — apply saved workflow to current project
+  - `listWorkflows()` — list available workflows
+
+**Tests:**
+- Workflow save/use/list round-trip works
+- Missing workflow returns error
+
+**Done when:** Workflow commands work end-to-end.
+
+---
+
+### Task 3.7: Log and Error Message Quality
 
 **Build:**
 - Review all log output for clarity and consistency
@@ -520,12 +439,11 @@ Before starting Phase 4, audit all Phase 3 code for production readiness using p
 |---|---|---|
 | 1 | 1.1–1.8 + audit | One loop runs safely with durable state |
 | 2 | 2.1–2.5 + audit | Unattended single-loop is safe |
-| 3 | 3.1–3.5 + audit | 2–3 loops no duplicate claims |
-| 4 | 4.1–4.5 | v0.1 ready |
+| 3 | 3.1–3.7 | v0.1 ready |
 
 Each phase ends with a mandatory audit gate. No phase starts until the prior audit passes.
 
-Total: 18 tasks + workflow feature, 24 test files, targeting 80%+ coverage.
+Total: 20 tasks, 24 test files, targeting 80%+ coverage.
 
 ---
 

@@ -63,7 +63,6 @@ export interface RunState {
 
   currentStoryId?: string;
   currentStoryTitle?: string;
-  currentClaimHeartbeatAt?: string;
 
   lastAgentOutputSummary?: string;
   lastValidationResult?: ValidationResult;

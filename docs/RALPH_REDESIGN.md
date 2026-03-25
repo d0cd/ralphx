@@ -127,7 +127,6 @@ If a story fails N consecutive times, skip it for this round and move on. Report
 ### 8. What we keep from current design
 
 - StateWriter with atomic writes ✓
-- Claims for multi-loop coordination ✓
 - Signal handler for graceful shutdown ✓
 - Cost tracking and budget limits ✓
 - Validator with quality gates + protected paths ✓
@@ -160,7 +159,6 @@ If a story fails N consecutive times, skip it for this round and move on. Report
 | Timeout | None | None | Per-iteration with graceful kill |
 | Rollback | None | None | Future: git checkpoint per iteration |
 | Progress memory | `progress.txt` (unbounded) | `progress.txt` (unbounded) | `progress.md` (structured, compactable) |
-| Multi-loop coordination | None | None | Claims with file locking |
 | Structured output | Grep for magic string | Grep for magic string | SDK streaming with typed messages |
 | Resumability | None (restart from scratch) | None | Durable run state, `ralph resume` |
 

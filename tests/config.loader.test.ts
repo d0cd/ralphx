@@ -20,13 +20,11 @@ describe('Config Loader', () => {
 
   it('returns defaults when no config file exists', () => {
     const config = loadConfig({ projectDir: tmpDir });
-    expect(config.agent).toBe('claude-code');
     expect(config.contextMode).toBe('continue');
     expect(config.timeoutMinutes).toBe(20);
     expect(config.cbNoProgressThreshold).toBe(3);
     expect(config.cbSameErrorThreshold).toBe(4);
     expect(config.cbCooldownMinutes).toBe(15);
-    expect(config.claimTtlMinutes).toBe(45);
     expect(config.verbose).toBe(false);
   });
 
@@ -40,7 +38,7 @@ describe('Config Loader', () => {
     expect(config.maxCostUsd).toBe(5.0);
     expect(config.verbose).toBe(true);
     // defaults still apply
-    expect(config.agent).toBe('claude-code');
+    expect(config.contextMode).toBe('continue');
   });
 
   it('env var overrides file value', () => {

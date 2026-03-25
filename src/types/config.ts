@@ -20,7 +20,6 @@ export const RalphConfigSchema = z.object({
   cbSameErrorThreshold: z.number().default(4),
   cbCooldownMinutes: z.number().default(15),
 
-  claimTtlMinutes: z.number().default(45),
   storyMaxConsecutiveFailures: z.number().default(3),
 
   protectedPaths: z.array(z.string()).optional(),

@@ -98,10 +98,6 @@ export class StateWriter {
     this.state.currentStoryTitle = storyTitle;
   }
 
-  setCurrentClaimHeartbeatAt(heartbeatAt: string | undefined): void {
-    this.state.currentClaimHeartbeatAt = heartbeatAt;
-  }
-
   setLastAgentOutputSummary(summary: string | undefined): void {
     this.state.lastAgentOutputSummary = summary;
   }

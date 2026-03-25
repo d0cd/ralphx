@@ -15,7 +15,6 @@ const ENV_MAP: Record<string, { key: keyof RalphConfig; type: 'string' | 'number
   RALPH_CB_NO_PROGRESS_THRESHOLD: { key: 'cbNoProgressThreshold', type: 'number' },
   RALPH_CB_SAME_ERROR_THRESHOLD: { key: 'cbSameErrorThreshold', type: 'number' },
   RALPH_CB_COOLDOWN_MINUTES: { key: 'cbCooldownMinutes', type: 'number' },
-  RALPH_CLAIM_TTL_MINUTES: { key: 'claimTtlMinutes', type: 'number' },
   RALPH_VERBOSE: { key: 'verbose', type: 'boolean' },
   RALPH_STORY_MAX_CONSECUTIVE_FAILURES: { key: 'storyMaxConsecutiveFailures', type: 'number' },
 };

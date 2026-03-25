@@ -47,7 +47,6 @@ function makeConfig(overrides: Partial<RalphConfig> = {}): RalphConfig {
     cbNoProgressThreshold: 3,
     cbSameErrorThreshold: 4,
     cbCooldownMinutes: 15,
-    claimTtlMinutes: 45,
     verbose: false,
     ...overrides,
   };
@@ -74,7 +73,6 @@ function setupTmpDir(): string {
   const tmpDir = join(tmpdir(), `ralph-loop-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(join(tmpDir, '.ralph'), { recursive: true });
   writeFileSync(join(tmpDir, '.ralph', 'prd.json'), JSON.stringify(makePrd()));
-  writeFileSync(join(tmpDir, '.ralph', 'claims.json'), JSON.stringify({ claims: [] }));
   return tmpDir;
 }
 
@@ -450,102 +448,8 @@ describe('RalphLoop', () => {
     });
 
     const result = await loop.run();
-    expect(result.exitReason).toBe('max_iterations'); // maxRounds maps to max_iterations exit
-  });
-
-  // --- Parallel group execution ---
-
-  it('runs stories in same group concurrently via Promise.all', async () => {
-    const prd = makePrd(3);
-    // Put all 3 stories in the same group
-    prd.stories[0].group = 1;
-    prd.stories[1].group = 1;
-    prd.stories[2].group = 1;
-    writeFileSync(join(tmpDir, '.ralph', 'prd.json'), JSON.stringify(prd));
-
-    const runningConcurrently: number[] = [];
-    let activeCount = 0;
-
-    const concurrentAgent: IAgent = {
-      name: 'concurrent-agent',
-      supportsSessionContinuity: true,
-      supportsStructuredOutput: true,
-      async run() {
-        activeCount++;
-        runningConcurrently.push(activeCount);
-        await new Promise(r => setTimeout(r, 50));
-        activeCount--;
-        return {
-          output: 'done', exitCode: 0,
-          usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0 },
-          sessionId: null, isApiLimitHit: false, isRateLimitHit: false, rawJson: null, durationMs: 50,
-        };
-      },
-      parseOutput(raw) {
-        return { output: raw, exitCode: 0, usage: null, sessionId: null, isApiLimitHit: false, isRateLimitHit: false, rawJson: null, durationMs: 0 };
-      },
-      async validateInstallation() { return { ok: true, version: '1.0.0' }; },
-    };
-
-    const loop = new RalphLoop({
-      config: makeConfig({ maxIterations: 10 }),
-      agent: concurrentAgent,
-      projectDir: tmpDir,
-    });
-
-    const result = await loop.run();
+    // In backlog mode, story-1 passes on first call (exitCode 0) → converged
     expect(result.exitReason).toBe('converged');
-    // At some point, multiple agents should have been running simultaneously
-    expect(Math.max(...runningConcurrently)).toBeGreaterThan(1);
-  });
-
-  it('runs different groups sequentially', async () => {
-    const prd = makePrd(2);
-    prd.stories[0].group = 1;
-    prd.stories[1].group = 2;
-    writeFileSync(join(tmpDir, '.ralph', 'prd.json'), JSON.stringify(prd));
-
-    const callOrder: string[] = [];
-
-    const orderAgent: IAgent = {
-      name: 'order-agent',
-      supportsSessionContinuity: true,
-      supportsStructuredOutput: true,
-      async run(options) {
-        // Extract story id from prompt - stories are identified by their id in the prompt
-        const match = options.prompt.match(/\[story-(\d+)\]/);
-        const id = match ? `story-${match[1]}` : 'unknown';
-        callOrder.push(`start-${id}`);
-        await new Promise(r => setTimeout(r, 20));
-        callOrder.push(`end-${id}`);
-        return {
-          output: 'done', exitCode: 0,
-          usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0 },
-          sessionId: null, isApiLimitHit: false, isRateLimitHit: false, rawJson: null, durationMs: 20,
-        };
-      },
-      parseOutput(raw) {
-        return { output: raw, exitCode: 0, usage: null, sessionId: null, isApiLimitHit: false, isRateLimitHit: false, rawJson: null, durationMs: 0 };
-      },
-      async validateInstallation() { return { ok: true, version: '1.0.0' }; },
-    };
-
-    const loop = new RalphLoop({
-      config: makeConfig({ maxIterations: 10 }),
-      agent: orderAgent,
-      projectDir: tmpDir,
-    });
-
-    await loop.run();
-    // Group 1 (story-1) should finish before group 2 (story-2) starts
-    // Since they're in different groups, they run sequentially
-    expect(callOrder.length).toBe(4);
-    // First group finishes before second starts
-    const endFirst = callOrder.indexOf('end-story-1');
-    const startSecond = callOrder.indexOf('start-story-2');
-    if (endFirst >= 0 && startSecond >= 0) {
-      expect(endFirst).toBeLessThan(startSecond);
-    }
   });
 
   it('re-evaluates passing stories when quality gates fail at round start', async () => {

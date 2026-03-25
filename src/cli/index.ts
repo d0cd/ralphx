@@ -105,11 +105,6 @@ program
         }, null, 2));
       }
 
-      const claimsPath = join(ralphDir, 'claims.json');
-      if (!existsSync(claimsPath)) {
-        writeFileSync(claimsPath, JSON.stringify({ claims: [] }, null, 2));
-      }
-
       const rcPath = join(ralphDir, '.ralphrc');
       if (!existsSync(rcPath)) {
         writeFileSync(rcPath, JSON.stringify({

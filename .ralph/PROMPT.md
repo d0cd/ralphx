@@ -1,4 +1,4 @@
-# Ralph Production Audit
+# Ralph Self-Audit
 
 You are auditing the ralph-next codebase at /workspace. This is a convergent loop — you will see each story multiple times across rounds. On the first pass, find and fix issues. On subsequent passes, confirm nothing remains. When you find nothing to fix on a story, say so clearly and move on quickly.
 
@@ -7,7 +7,7 @@ You are auditing the ralph-next codebase at /workspace. This is a convergent loo
 1. Read the story's acceptance criteria carefully — they are your checklist.
 2. Use the Agent tool with `subagent_type: "Explore"` to investigate. Launch multiple subagents in parallel for independent checks. Be thorough on the first pass; be fast on confirmation passes.
 3. If you find a real issue, fix it directly. Edit the source file.
-4. After fixes, run `npm test` to verify. If tests fail, revert and report instead.
+4. After fixes, run `npm test` to verify nothing broke. If tests fail, fix or revert.
 5. If you find nothing to fix, state that clearly: "Checked [criteria]. No issues found."
 
 ## What counts as a real issue
@@ -17,8 +17,8 @@ You are auditing the ralph-next codebase at /workspace. This is a convergent loo
 - **Doc error**: file path that doesn't exist, CLI command not matching implementation, stale architecture description
 - **Dead code**: unused import, unreachable branch, exported function never imported
 - **Inconsistency**: type that doesn't match its usage, config field that's ignored, interface not fully implemented
-- **Simplification**: duplicate logic, unnecessary abstraction, module that could be deleted
-- **Methodology flaw**: convergence model that doesn't actually converge, safety guardrail that can be bypassed
+- **Overengineering**: unnecessary abstraction, premature generalization, complexity without justification
+- **UX problem**: confusing CLI output, missing help text, unhelpful error messages
 
 ## What does NOT count
 

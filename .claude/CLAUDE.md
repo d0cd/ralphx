@@ -2,7 +2,7 @@
 
 ## What is this project?
 
-An autonomous coding loop CLI tool (`ralph-next`) that wraps AI coding agents (Claude Code only in v0.1) in a safe, resumable loop with durable state, budget guardrails, and lightweight same-repo concurrency.
+An autonomous coding loop CLI tool (`ralph-next`) that wraps AI coding agents (Claude Code only in v0.1) in a safe, resumable loop with durable state and budget guardrails.
 
 ## Tech stack
 
@@ -29,7 +29,6 @@ src/
 │   ├── loop.ts           — Main orchestrator
 │   ├── state-writer.ts   — Atomic run state persistence
 │   ├── circuit-breaker.ts — Trip on no-progress/repeated errors
-│   ├── exit-detector.ts  — Unified exit condition checks
 │   ├── validator.ts      — Quality gates + protected paths + diff sanity
 │   ├── signal-handler.ts — SIGINT/SIGTERM graceful shutdown
 │   ├── hint.ts           — Hint file consumption
@@ -42,7 +41,6 @@ src/
 │   └── strategies.ts     — Fresh/continue prompt building
 ├── prd/
 │   ├── tracker.ts        — Load/update prd.json
-│   ├── claims.ts         — Story claiming with file lock
 │   └── importer.ts       — Markdown → prd.json
 ├── config/
 │   └── loader.ts         — Config resolution (flag > env > file > defaults)
@@ -50,16 +48,14 @@ src/
 │   ├── pricing.ts        — Per-model cost estimation
 │   └── models.json       — Pricing data
 ├── sync/
-│   ├── atomic-write.ts   — Atomic JSON write (temp+rename)
-│   ├── file-lock.ts      — O_EXCL file locking with stale recovery
-│   └── pid-utils.ts      — PID alive check
+│   └── atomic-write.ts   — Atomic JSON write (temp+rename)
 ├── workflow/
 │   └── manager.ts        — Save/use/list reusable workflow templates
 └── types/
     ├── state.ts          — RunState, ValidationResult, ExitReason
     ├── config.ts         — RalphConfig zod schema
     ├── agent.ts          — IAgent, AgentRunResult, TokenUsage
-    └── prd.ts            — Story, PRD, StoryClaim, ClaimsFile
+    └── prd.ts            — Story, PRD
 ```
 
 ## Architecture rules
@@ -71,6 +67,7 @@ src/
 - **One run = one state file** — runs never write to each other's state
 - **Docker is the security boundary** — no additional sandbox layer
 - **Agent interface** — all agent interaction goes through `IAgent` interface in `src/types/agent.ts`
+- **Stories run sequentially** in priority order; the agent handles its own parallelism via subagents
 
 ## Development rules
 

@@ -3,7 +3,7 @@
 **Version:** 0.1.0
 **Status:** Implemented
 **Primary environment:** Docker container
-**Primary workflow:** One loop per repo (occasional 2–3 concurrent loops same container/repo)
+**Primary workflow:** One loop per repo
 
 ---
 
@@ -15,7 +15,6 @@ The v0.1 goal is to be:
 - reliable enough to run unattended
 - simple enough to implement and debug quickly
 - safe enough to bound cost, bad loops, and accidental file damage
-- structured enough to support occasional multiple loops in the same repo
 
 The loop cycle: select task → prepare context → run agent → validate result → update state → continue/pause/exit.
 
@@ -33,6 +32,7 @@ Out of scope:
 - Hooks platform
 - GitHub issue import
 - Provider-agnostic abstraction beyond immediate needs
+- Same-repo concurrent loops
 
 ---
 
@@ -42,7 +42,7 @@ Out of scope:
 
 A CLI tool with a small internal library structure that runs an autonomous coding loop with durable per-run state and hard safety guardrails.
 
-> A safe autonomous coding loop for one repo in one container, with lightweight support for occasional concurrent runs.
+> A safe autonomous coding loop for one repo in one container.
 
 ---
 
@@ -51,9 +51,8 @@ A CLI tool with a small internal library structure that runs an autonomous codin
 1. **Single-run correctness first** — default path is one loop, one repo, safely
 2. **Durable state over implicit state** — explicit state on disk, resume and debug easily
 3. **Safety is part of the control plane** — budget limits, circuit breakers, protected paths, validation gates are not optional
-4. **Minimal concurrency support** — simple claim-and-lock model
-5. **Keep the loop thin and testable** — orchestrator coordinates, doesn't contain business logic
-6. **Docker is the security boundary** — no additional sandbox layer in v0.1
+4. **Keep the loop thin and testable** — orchestrator coordinates, doesn't contain business logic
+5. **Docker is the security boundary** — no additional sandbox layer in v0.1
 
 ---
 
@@ -72,19 +71,14 @@ Runs inside Docker:
 - Host is isolated from loop commands
 - Process lifecycle is container-scoped
 - Repo-local state > machine-global state
-- Same-container concurrency is limited and known
 
 No machine-global run registry needed.
 
 ---
 
-## 7. Execution Modes
+## 7. Execution Mode
 
-| Mode | Description |
-|---|---|
-| Default | One loop, one repo, one container |
-| Secondary | 2–3 loops same container/repo (claim-and-lock) |
-| Cross-repo | Multiple loops, different repos, no special coordination needed |
+One loop, one repo, one container. Stories run sequentially in priority order; the agent handles its own parallelism via subagents.
 
 ---
 
@@ -99,7 +93,6 @@ ralph-next/
 │   │   ├── loop.ts
 │   │   ├── state-writer.ts
 │   │   ├── circuit-breaker.ts
-│   │   ├── exit-detector.ts
 │   │   ├── signal-handler.ts
 │   │   ├── validator.ts
 │   │   ├── resume.ts
@@ -112,7 +105,6 @@ ralph-next/
 │   │   └── strategies.ts
 │   ├── prd/
 │   │   ├── tracker.ts
-│   │   ├── claims.ts
 │   │   └── importer.ts
 │   ├── config/
 │   │   └── loader.ts
@@ -120,9 +112,7 @@ ralph-next/
 │   │   ├── pricing.ts
 │   │   └── models.json
 │   ├── sync/
-│   │   ├── atomic-write.ts
-│   │   ├── file-lock.ts
-│   │   └── pid-utils.ts
+│   │   └── atomic-write.ts
 │   ├── workflow/
 │   │   └── manager.ts
 │   └── types/
@@ -144,7 +134,6 @@ ralph-next/
 ├── PROMPT.md          # Base loop prompt (human-authored)
 ├── AGENT.md           # Repo-specific commands/guidance (read-only during runs)
 ├── prd.json           # Task list
-├── claims.json        # Story claiming coordination
 ├── .ralphrc           # Per-repo config
 └── runs/
     └── {runId}/
@@ -175,7 +164,6 @@ export interface RunState {
 
   currentStoryId?: string;
   currentStoryTitle?: string;
-  currentClaimHeartbeatAt?: string;
 
   lastAgentOutputSummary?: string;
   lastValidationResult?: ValidationResult;
@@ -214,7 +202,7 @@ export interface RunState {
 State writing rules:
 - One run writes only its own file
 - Writes are atomic (temp file + rename)
-- Flush at: run start, after story claim, after each iteration, on pause, on completion, on interruption, on crash
+- Flush at: run start, after each iteration, on pause, on completion, on interruption, on crash
 
 ---
 
@@ -285,7 +273,6 @@ export interface Story {
   description: string;
   acceptanceCriteria: string[];
   priority: number;
-  group?: number;
   status: 'active' | 'deferred';
   passes: boolean;
   consecutiveFailures?: number;
@@ -306,46 +293,7 @@ export interface PRD {
 
 ---
 
-## 14. Same-Repo Multi-Loop Support
-
-### claims.json
-
-```ts
-export interface StoryClaim {
-  storyId: string;
-  runId: string;
-  claimedAt: string;
-  heartbeatAt: string;
-  pid: number;
-}
-
-export interface ClaimsFile {
-  claims: StoryClaim[];
-}
-```
-
-### Claiming flow
-1. Acquire short lock on `claims.json`
-2. Read claims → prune stale → read `prd.json`
-3. Find highest-priority unclaimed non-passing active story
-4. Write claim → release lock
-
-### Claim expiry
-Stale if: PID not alive OR heartbeat older than configured TTL.
-
-### Guarantees
-- Two runs won't claim the same story simultaneously
-- Stale claims don't block forever
-- Each run isolated in its own run directory
-
-### Accepted limitations
-- No prevention of overlapping file edits across stories
-- No semantic collision detection
-- No auto-merge or conflict resolution
-
----
-
-## 15. Validation Model
+## 14. Validation Model
 
 Every iteration flows through validation.
 
@@ -374,7 +322,7 @@ Story `passes` set to `true` only when: validation passes + no protected path vi
 
 ---
 
-## 16. Exit Detection
+## 15. Exit Detection
 
 ```ts
 export type ExitReason =
@@ -391,7 +339,7 @@ Exit when: all stories converge (pass), no progress in a round, max iterations, 
 
 ---
 
-## 17. Cost Tracking
+## 16. Cost Tracking
 
 Limits: `maxCostUsd` (hard), `warnCostUsd` (warn), `maxTokensSession` (hard), `costPerIterationThreshold` (CB trip).
 
@@ -399,7 +347,7 @@ All cost math is estimates, stored in RunState.
 
 ---
 
-## 18. Circuit Breaker
+## 17. Circuit Breaker
 
 Trip conditions: no progress for N iterations, same error N times, cost spike, repeated validation failure, repeated permission denial.
 
@@ -407,10 +355,10 @@ States: `closed` → `open` → `half_open`
 
 ---
 
-## 19. Protected Paths
+## 18. Protected Paths
 
 Defaults:
-- `.ralph/AGENT.md`, `.ralph/prd.json`, `.ralph/claims.json`, `.ralph/runs/**`
+- `.ralph/AGENT.md`, `.ralph/prd.json`, `.ralph/runs/**`
 - `.env`, `.env.*`
 - `**/*.lock`
 
@@ -418,23 +366,23 @@ Enforced in prompt AND validated after changes.
 
 ---
 
-## 20. Resume and Interruption
+## 19. Resume and Interruption
 
-On SIGINT/SIGTERM: request stop → wait for iteration → flush state → preserve claim (short TTL) → exit cleanly.
+On SIGINT/SIGTERM: request stop → wait for iteration → flush state → exit cleanly.
 
-On crash: mark `crashed` best-effort, stale claim cleanup releases story later.
+On crash: mark `crashed` best-effort.
 
-`resume <runId>` continues from same story if claim still valid.
+`resume <runId>` continues from same story.
 
 ---
 
-## 21. Hint Injection
+## 20. Hint Injection
 
 Human writes to `.ralph/runs/{runId}/hint.md` → loop reads before next iteration → prepends to prompt → deletes atomically after consumption.
 
 ---
 
-## 22. Orchestrator
+## 21. Orchestrator
 
 Two loop modes controlled by `loopMode` config:
 
@@ -443,7 +391,7 @@ Two loop modes controlled by `loopMode` config:
 | `convergent` (default) | Run ALL active stories every round; converged when a full round produces zero changes and all gates pass | Audits, quality sweeps |
 | `backlog` | Run only failing stories; done when all stories pass | Feature implementation, sequential work |
 
-Stories with a `group` field run in parallel within the same group; groups execute sequentially.
+Stories run sequentially in priority order.
 
 ```ts
 export class RalphLoop {
@@ -460,15 +408,10 @@ export class RalphLoop {
         ? allActiveStories()       // convergent: every story
         : getFailingStories();     // backlog: only failing
 
-      const groups = groupStories(stories);  // group field → parallel
-
-      for (const group of groups) {
-        // stories within a group run in parallel
-        for (const story of group) {
-          const result = await agent.run(buildPrompt(story, ...));
-          const validation = await validator.validate(...);
-          updateStoryPasses(story, validation);
-        }
+      for (const story of stories) {
+        const result = await agent.run(buildPrompt(story, ...));
+        const validation = await validator.validate(...);
+        updateStoryPasses(story, validation);
       }
 
       // convergent: exit when zero changes + all pass
@@ -483,11 +426,10 @@ export class RalphLoop {
 
 ---
 
-## 23. Configuration
+## 22. Configuration
 
 ```ts
 export const RalphConfigSchema = z.object({
-  agent: z.enum(['claude-code']).default('claude-code'),
   agentCmd: z.string().optional(),
   agentModel: z.string().optional(),
   contextMode: z.enum(['continue', 'fresh']).default('continue'),
@@ -502,7 +444,6 @@ export const RalphConfigSchema = z.object({
   cbNoProgressThreshold: z.number().default(3),
   cbSameErrorThreshold: z.number().default(4),
   cbCooldownMinutes: z.number().default(15),
-  claimTtlMinutes: z.number().default(45),
   storyMaxConsecutiveFailures: z.number().default(3),
   protectedPaths: z.array(z.string()).optional(),
   allowedTools: z.array(z.string()).optional(),
@@ -514,7 +455,7 @@ Resolution: Flag > env var > `.ralph/.ralphrc` > defaults
 
 ---
 
-## 24. CLI Surface
+## 23. CLI Surface
 
 ```bash
 ralph run [--prompt "..." | --context-mode fresh | --max-cost 20 | --max-iterations 50]
@@ -534,41 +475,35 @@ ralph workflow list
 
 ---
 
-## 25. Failure Modes
+## 24. Failure Modes
 
 | Failure | Mitigation |
 |---|---|
 | Agent loops without progress | CB + max iterations + budget caps |
 | False completion | Validation gate + acceptance criteria check |
 | Protected file modified | Prompt instruction + post-run validation |
-| Process interrupted mid-iteration | Atomic state flush, TTL claim cleanup |
-| Two loops claim same story | `claims.json` file lock |
-| Different stories touch same file | Accepted v0.1 limitation |
-| Claim never released after crash | TTL + PID checks |
+| Process interrupted mid-iteration | Atomic state flush |
 | Cost estimation drift | Central pricing table, labeled as estimates |
 | Agent output schema changes | Central parser + fixture tests + startup version check |
 | Long session degrades | Fresh mode available, session expiry |
 | Flaky validation | Output logged, repeated failures trip CB |
 
-**Biggest accepted limitation:** v0.1 prevents same-story collisions but not same-file collisions across stories.
-
 ---
 
-## 26. Testing Strategy
+## 25. Testing Strategy
 
-**Unit tests:** parser, config loader, state writer, circuit breaker, exit detector, validator, claims manager, stale claim pruning, resume logic, hint consumption.
+**Unit tests:** parser, config loader, state writer, circuit breaker, validator, resume logic, hint consumption.
 
-**Integration tests:** happy path, interrupted resume, budget stop, CB trip, dual-loop no duplicate claim, stale claim recovery, protected path violation.
+**Integration tests:** happy path, interrupted resume, budget stop, CB trip, protected path violation.
 
 **Coverage goal:** 80%+
 
 ---
 
-## 27. Implementation Phases
+## 26. Implementation Phases
 
 | Phase | Items | Milestone |
 |---|---|---|
 | 1 — Core loop | Scaffold, config, CC adapter, state types/writer, orchestrator, signals, basic CLI | One loop runs safely with durable state |
 | 2 — Safety | Budget tracking, CB, protected paths, validation, exit detection | Unattended single-loop is safe |
-| 3 — Concurrency | claims.json, file locking, stale pruning, resume+claims, concurrency tests | 2–3 loops no duplicate claims |
-| 4 — Polish | Fresh context, hints, dry-run, README, log quality | v0.1 ready |
+| 3 — Polish | Fresh context, hints, dry-run, resume, log quality, workflows | v0.1 ready |

@@ -1,10 +1,11 @@
 {
-  "agent": "claude-code",
   "loopMode": "convergent",
   "contextMode": "fresh",
-  "timeoutMinutes": 30,
-  "maxRounds": 20,
-  "maxCostUsd": 50,
+  "timeoutMinutes": 15,
+  "maxRounds": 10,
+  "maxCostUsd": 30,
+  "cbNoProgressThreshold": 3,
+  "cbSameErrorThreshold": 5,
   "verbose": true,
   "storyMaxConsecutiveFailures": 3
 }

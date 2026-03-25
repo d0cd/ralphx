@@ -87,6 +87,7 @@ export class ClaudeCodeAgent implements IAgent {
 
   async run(options: AgentRunOptions): Promise<AgentRunResult> {
     const startTime = Date.now();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
     try {
       let resultOutput = '';
@@ -105,10 +106,8 @@ export class ClaudeCodeAgent implements IAgent {
         sdkOptions.allowedTools = options.allowedTools;
       }
       if (options.timeoutMs) {
-        // Convert timeout to budget — rough estimate at $15/MTok output
-        // SDK has maxBudgetUsd but not a direct timeout; use abortController
         sdkOptions.abortController = new AbortController();
-        setTimeout(() => sdkOptions.abortController!.abort(), options.timeoutMs);
+        timeoutHandle = setTimeout(() => sdkOptions.abortController!.abort(), options.timeoutMs);
       }
 
       for await (const message of query({
@@ -183,6 +182,8 @@ export class ClaudeCodeAgent implements IAgent {
         rawJson: null,
         durationMs,
       };
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
   }
 

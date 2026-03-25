@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { loadPrd, getNextStory, getFailingStories, updateStoryPasses, allStoriesPass, resetFailingStories, groupStories } from '../src/prd/tracker.js';
+import { loadPrd, getFailingStories, updateStoryPasses, allStoriesPass, resetFailingStories } from '../src/prd/tracker.js';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -78,43 +78,6 @@ describe('PRD Tracker', () => {
       expect(prd.stories[0].passes).toBe(false);
       expect(prd.stories[1].status).toBe('active');
       expect(prd.stories[1].passes).toBe(true);
-    });
-  });
-
-  describe('getNextStory', () => {
-    it('returns highest priority failing story', () => {
-      const prd = makePrd(3);
-      const story = getNextStory(prd);
-      expect(story?.id).toBe('s-1');
-    });
-
-    it('skips excluded IDs', () => {
-      const prd = makePrd(3);
-      const story = getNextStory(prd, new Set(['s-1']));
-      expect(story?.id).toBe('s-2');
-    });
-
-    it('skips passing stories', () => {
-      const prd = makePrd(3);
-      prd.stories[0].passes = true;
-      const story = getNextStory(prd);
-      expect(story?.id).toBe('s-2');
-    });
-
-    it('returns null when all stories pass', () => {
-      const prd = makePrd(2);
-      prd.stories.forEach(s => s.passes = true);
-      expect(getNextStory(prd)).toBeNull();
-    });
-
-    it('returns null when all stories excluded', () => {
-      const prd = makePrd(2);
-      expect(getNextStory(prd, new Set(['s-1', 's-2']))).toBeNull();
-    });
-
-    it('returns null for empty stories array', () => {
-      const prd = makePrd(0);
-      expect(getNextStory(prd)).toBeNull();
     });
   });
 
@@ -288,46 +251,6 @@ describe('PRD Tracker', () => {
       const updated = loadPrd(prdPath);
       expect(updated.stories[0].passes).toBe(false);
       expect(updated.stories[0].consecutiveFailures).toBe(3); // unchanged
-    });
-  });
-
-  describe('groupStories', () => {
-    it('groups stories by group field', () => {
-      const stories = [
-        { id: 's-1', group: 1, priority: 1 },
-        { id: 's-2', group: 1, priority: 2 },
-        { id: 's-3', group: 2, priority: 3 },
-      ];
-      const groups = groupStories(stories);
-      expect(groups).toHaveLength(2);
-      expect(groups[0].map((s: any) => s.id)).toEqual(['s-1', 's-2']);
-      expect(groups[1].map((s: any) => s.id)).toEqual(['s-3']);
-    });
-
-    it('falls back to priority when no group field', () => {
-      const stories = [
-        { id: 's-1', priority: 1 },
-        { id: 's-2', priority: 2 },
-        { id: 's-3', priority: 3 },
-      ];
-      const groups = groupStories(stories);
-      // Each story in its own group (sequential)
-      expect(groups).toHaveLength(3);
-    });
-
-    it('puts all stories in one group for parallel execution', () => {
-      const stories = [
-        { id: 's-1', group: 1, priority: 1 },
-        { id: 's-2', group: 1, priority: 2 },
-        { id: 's-3', group: 1, priority: 3 },
-      ];
-      const groups = groupStories(stories);
-      expect(groups).toHaveLength(1);
-      expect(groups[0]).toHaveLength(3);
-    });
-
-    it('returns empty array for empty input', () => {
-      expect(groupStories([])).toHaveLength(0);
     });
   });
 

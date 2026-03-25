@@ -10,8 +10,7 @@ import { readHint } from './hint.js';
 import { log, setLogLevel } from './logger.js';
 import { appendProgress, readProgress } from './progress-writer.js';
 import { buildFreshPrompt, buildContinuePrompt } from '../context/strategies.js';
-import { loadPrd, getFailingStories, allStoriesPass, updateStoryPasses, resetFailingStories, groupStories } from '../prd/tracker.js';
-import { ClaimsManager } from '../prd/claims.js';
+import { loadPrd, getFailingStories, allStoriesPass, updateStoryPasses, resetFailingStories } from '../prd/tracker.js';
 import { estimateCost } from '../cost/pricing.js';
 import type { IAgent } from '../types/agent.js';
 import type { RalphConfig } from '../types/config.js';
@@ -32,7 +31,6 @@ interface RalphLoopOptions {
 const DEFAULT_PROTECTED_PATHS = [
   '.ralph/AGENT.md',
   '.ralph/prd.json',
-  '.ralph/claims.json',
   '.ralph/runs/**',
   '.env',
   '.env.*',
@@ -49,19 +47,16 @@ export class RalphLoop {
   private stateWriter: StateWriter;
   private cb: CircuitBreaker;
   private validator: Validator;
-  private claims: ClaimsManager;
   private signalHandler: SignalHandler;
   private stopRequested = false;
   private consecutiveValidationFailures = 0;
   private prdPath: string;
-  private claimsPath: string;
 
   constructor(options: RalphLoopOptions) {
     this.config = options.config;
     this.agent = options.agent;
     this.projectDir = options.projectDir;
     this.prdPath = join(options.projectDir, '.ralph', 'prd.json');
-    this.claimsPath = join(options.projectDir, '.ralph', 'claims.json');
 
     setLogLevel(options.config.verbose ? 'debug' : 'info');
 
@@ -87,12 +82,6 @@ export class RalphLoop {
       protectedPaths,
       qualityGates: prd.qualityGates,
       projectDir: options.projectDir,
-    });
-
-    this.claims = new ClaimsManager({
-      prdPath: this.prdPath,
-      claimsPath: this.claimsPath,
-      ttlMinutes: options.config.claimTtlMinutes,
     });
 
     this.signalHandler = new SignalHandler();
@@ -124,8 +113,6 @@ export class RalphLoop {
     let exitReason: ExitReason = 'converged';
     let iteration = 0;
     let round = 0;
-    let currentStoryId: string | null = null;
-
     try {
       // Outer loop: rounds.
       // Each round runs the agent on ALL active stories.
@@ -204,15 +191,13 @@ export class RalphLoop {
           ? new Map(prd.stories.map(s => [s.id, s.passes]))
           : null;
 
-        const groups = groupStories(stories);
-        log.info(`Round ${round}: ${stories.length} stories in ${groups.length} groups (${isConvergent ? 'convergent' : 'backlog'} mode)`);
+        log.info(`Round ${round}: ${stories.length} stories (${isConvergent ? 'convergent' : 'backlog'} mode)`);
         let roundFixCount = 0;
 
-        // Execute groups sequentially; stories within a group run in parallel
-        for (const group of groups) {
+        for (const story of stories) {
           if (this.stopRequested) break;
 
-          // Check limits before each group
+          // Check limits before each story
           if (this.config.maxIterations && iteration >= this.config.maxIterations) {
             exitReason = 'max_iterations';
             break;
@@ -239,20 +224,8 @@ export class RalphLoop {
             break;
           }
 
-          if (group.length === 1) {
-            // Single story — run sequentially (no overhead)
-            const result = await this.executeStory(group[0], ++iteration, round);
-            if (result) roundFixCount++;
-          } else {
-            // Multiple stories — run in parallel
-            log.info(`  Group ${group[0].group ?? group[0].priority}: ${group.length} stories in parallel`);
-            const iterationBase = iteration;
-            const results = await Promise.all(
-              group.map((story, idx) => this.executeStory(story, iterationBase + idx + 1, round)),
-            );
-            iteration += group.length;
-            roundFixCount += results.filter(Boolean).length;
-          }
+          const result = await this.executeStory(story, ++iteration, round);
+          if (result) roundFixCount++;
         }
 
         // End of round
@@ -308,9 +281,6 @@ export class RalphLoop {
       throw new Error(`Loop crashed: ${errorMsg}`);
     } finally {
       this.signalHandler.unregister();
-      if (currentStoryId) {
-        try { await this.claims.releaseStory(currentStoryId, this.runId); } catch { /* best effort */ }
-      }
     }
 
     this.stateWriter.setExitReason(exitReason);

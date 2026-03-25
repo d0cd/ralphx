@@ -13,10 +13,6 @@ export function setLogLevel(level: LogLevel): void {
   minLevel = level;
 }
 
-export function setVerbose(verbose: boolean): void {
-  minLevel = verbose ? 'debug' : 'info';
-}
-
 function shouldLog(level: LogLevel): boolean {
   return LEVEL_ORDER[level] >= LEVEL_ORDER[minLevel];
 }
