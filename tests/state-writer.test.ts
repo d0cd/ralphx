@@ -162,6 +162,78 @@ describe('StateWriter', () => {
     expect(state2.perIteration).toHaveLength(0);
   });
 
+  it('setCurrentStory is observable through getState', async () => {
+    const writer = makeWriter();
+    await writer.initialize();
+
+    writer.setCurrentStory('story-42', 'Fix the widget');
+    const state = writer.getState();
+    expect(state.currentStoryId).toBe('story-42');
+    expect(state.currentStoryTitle).toBe('Fix the widget');
+
+    // Clearing
+    writer.setCurrentStory(undefined, undefined);
+    const cleared = writer.getState();
+    expect(cleared.currentStoryId).toBeUndefined();
+    expect(cleared.currentStoryTitle).toBeUndefined();
+  });
+
+  it('setLastAgentOutputSummary is observable through getState', async () => {
+    const writer = makeWriter();
+    await writer.initialize();
+
+    writer.setLastAgentOutputSummary('Agent fixed 3 issues');
+    expect(writer.getState().lastAgentOutputSummary).toBe('Agent fixed 3 issues');
+
+    writer.setLastAgentOutputSummary(undefined);
+    expect(writer.getState().lastAgentOutputSummary).toBeUndefined();
+  });
+
+  it('setLastError is observable through getState', async () => {
+    const writer = makeWriter();
+    await writer.initialize();
+
+    writer.setLastError('Validation failed: tests broken');
+    expect(writer.getState().lastError).toBe('Validation failed: tests broken');
+
+    writer.setLastError(undefined);
+    expect(writer.getState().lastError).toBeUndefined();
+  });
+
+  it('setExitReason is observable through getState', async () => {
+    const writer = makeWriter();
+    await writer.initialize();
+
+    writer.setExitReason('budget_exceeded');
+    expect(writer.getState().exitReason).toBe('budget_exceeded');
+  });
+
+  it('recordIteration includes round and storyId fields', async () => {
+    const writer = makeWriter();
+    await writer.initialize();
+
+    await writer.recordIteration({
+      iteration: 1,
+      round: 2,
+      storyId: 'story-7',
+      startedAt: '2026-01-01T00:00:00Z',
+      endedAt: '2026-01-01T00:01:00Z',
+      durationMs: 60000,
+      inputTokens: 500,
+      outputTokens: 250,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      estimatedCostUsd: 0.02,
+      validationPassed: true,
+      summary: 'Fixed auth bug',
+    });
+
+    const state = writer.getState();
+    expect(state.round).toBe(2);
+    expect(state.perIteration[0].storyId).toBe('story-7');
+    expect(state.perIteration[0].summary).toBe('Fixed auth bug');
+  });
+
   it('loop.log grows with each flush', async () => {
     const writer = makeWriter();
     await writer.initialize();

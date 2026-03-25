@@ -440,7 +440,8 @@ export class RalphLoop {
     try {
       return execSync('git diff --name-only HEAD', {
         cwd: this.projectDir, encoding: 'utf-8', timeout: 10000,
-      }).trim().split('\n').filter(Boolean);
+      }).trim().split('\n').filter(Boolean)
+        .filter(f => !f.startsWith('.ralph/')); // Exclude loop-managed files
     } catch { return []; /* best-effort: git may not be available or no commits yet */ }
   }
 

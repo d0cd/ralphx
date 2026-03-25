@@ -17,7 +17,7 @@
       "status": "active",
       "passes": false,
       "consecutiveFailures": 1,
-      "lastError": "Protected paths modified: .ralph/AGENT.md, .ralph/prd.json"
+      "lastError": "Protected paths modified: .ralph/prd.json"
     },
     {
       "id": "dead-code",
@@ -34,7 +34,7 @@
       "status": "active",
       "passes": false,
       "consecutiveFailures": 1,
-      "lastError": "Protected paths modified: .ralph/AGENT.md, .ralph/prd.json"
+      "lastError": "Protected paths modified: .ralph/prd.json"
     },
     {
       "id": "test-coverage",
@@ -48,7 +48,9 @@
       ],
       "priority": 3,
       "status": "active",
-      "passes": false
+      "passes": false,
+      "consecutiveFailures": 1,
+      "lastError": "Protected paths modified: .ralph/prd.json"
     },
     {
       "id": "robustness",

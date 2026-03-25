@@ -63,4 +63,47 @@ describe('Context Strategies', () => {
       expect(prompt).not.toContain('Prior Progress');
     });
   });
+
+  describe('edge cases', () => {
+    it('buildFreshPrompt handles empty acceptanceCriteria', () => {
+      const emptyAcStory: Story = {
+        ...story,
+        acceptanceCriteria: [],
+      };
+      const prompt = buildFreshPrompt({ story: emptyAcStory });
+      expect(prompt).toContain('Acceptance Criteria');
+      expect(prompt).toContain(emptyAcStory.title);
+    });
+
+    it('buildContinuePrompt handles empty acceptanceCriteria', () => {
+      const emptyAcStory: Story = {
+        ...story,
+        acceptanceCriteria: [],
+      };
+      const prompt = buildContinuePrompt({ story: emptyAcStory });
+      expect(prompt).toContain('Acceptance Criteria:');
+      expect(prompt).toContain(emptyAcStory.title);
+    });
+
+    it('buildFreshPrompt includes progressMd when provided', () => {
+      const prompt = buildFreshPrompt({
+        story,
+        progressMd: '## Round 1\n- Fixed auth bug',
+      });
+      expect(prompt).toContain('Prior Iterations');
+      expect(prompt).toContain('Fixed auth bug');
+    });
+
+    it('buildFreshPrompt with all optional sections', () => {
+      const prompt = buildFreshPrompt({
+        story,
+        agentMd: '# Instructions',
+        validationSummary: 'Tests failing',
+        progressMd: 'Round 1 done',
+      });
+      expect(prompt).toContain('Agent Instructions');
+      expect(prompt).toContain('Validation Results');
+      expect(prompt).toContain('Prior Iterations');
+    });
+  });
 });

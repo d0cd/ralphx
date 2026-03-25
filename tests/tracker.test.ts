@@ -99,6 +99,19 @@ describe('PRD Tracker', () => {
       expect(failing[0].id).toBe('s-2');
     });
 
+    it('returns empty array when all stories pass', () => {
+      const prd = makePrd(3);
+      prd.stories.forEach(s => s.passes = true);
+      const failing = getFailingStories(prd);
+      expect(failing).toHaveLength(0);
+    });
+
+    it('returns empty array for zero stories', () => {
+      const prd = makePrd(0);
+      const failing = getFailingStories(prd);
+      expect(failing).toHaveLength(0);
+    });
+
     it('skips circuit-broken stories when threshold provided', () => {
       const prd = makePrd(3);
       prd.stories[0].consecutiveFailures = 3;

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { findResumableRun, canResume } from '../src/core/resume.js';
+import { findResumableRun, canResume, isStaleRunning } from '../src/core/resume.js';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -99,5 +99,40 @@ describe('Resume', () => {
 
   it('canResume returns false for running', () => {
     expect(canResume('running')).toBe(false);
+  });
+
+  // --- isStaleRunning ---
+
+  it('isStaleRunning returns true when status is running and PID is dead', () => {
+    // Use a PID that is almost certainly not alive (max possible PID)
+    const state = makeRunState({ status: 'running', pid: 2147483647 });
+    expect(isStaleRunning(state)).toBe(true);
+  });
+
+  it('isStaleRunning returns false when status is running and PID is alive', () => {
+    // Current process PID is definitely alive
+    const state = makeRunState({ status: 'running', pid: process.pid });
+    expect(isStaleRunning(state)).toBe(false);
+  });
+
+  it('isStaleRunning returns false when status is not running', () => {
+    const state = makeRunState({ status: 'interrupted', pid: 2147483647 });
+    expect(isStaleRunning(state)).toBe(false);
+  });
+
+  // --- findResumableRun edge cases ---
+
+  it('findResumableRun treats stale running process as interrupted', () => {
+    // Write a state with status 'running' but a dead PID
+    writeState(makeRunState({ status: 'running', pid: 2147483647 }));
+    const state = findResumableRun(tmpDir, 'test-run');
+    expect(state).not.toBeNull();
+    expect(state!.status).toBe('interrupted');
+  });
+
+  it('findResumableRun throws on corrupt JSON', () => {
+    const statePath = join(tmpDir, '.ralph', 'runs', 'test-run', 'run-state.json');
+    writeFileSync(statePath, '{ broken json!!!');
+    expect(() => findResumableRun(tmpDir, 'test-run')).toThrow('Failed to read run state');
   });
 });

@@ -71,6 +71,19 @@ describe('Validator', () => {
       expect(result.protectedPathsViolated).toContain('.env.local');
     });
 
+    it('returns empty violations for empty changed files list', () => {
+      const v = new Validator(makeConfig({ projectDir: tmpDir }));
+      const result = v.checkProtectedPaths([]);
+      expect(result.protectedPathsViolated).toHaveLength(0);
+      expect(result.outsideProject).toHaveLength(0);
+    });
+
+    it('detects path traversal outside project directory', () => {
+      const v = new Validator(makeConfig({ projectDir: tmpDir }));
+      const result = v.checkProtectedPaths(['../../etc/passwd']);
+      expect(result.outsideProject).toHaveLength(1);
+    });
+
     it('handles regex-special characters in patterns and paths', () => {
       const v = new Validator(makeConfig({
         projectDir: tmpDir,
@@ -158,6 +171,24 @@ describe('Validator', () => {
       });
       expect(result.passed).toBe(false);
       expect(result.protectedPathsViolated).toContain('.env');
+    });
+
+    it('combines protected path and gate failure reasons', async () => {
+      const v = new Validator(makeConfig({
+        projectDir: tmpDir,
+        qualityGates: { test: 'exit 1' },
+      }));
+      const result = await v.validate({
+        changedFiles: ['.env'],
+        diffSize: 50,
+      });
+      expect(result.passed).toBe(false);
+      expect(result.reasons).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('Protected paths'),
+          expect.stringContaining('Quality gates failed'),
+        ]),
+      );
     });
 
     it('clean change passes', async () => {

@@ -1,24 +1,39 @@
+## Iteration 3 (Round 1) — [test-coverage] Test coverage and quality
+- **Time**: 2026-03-25T04:49:01.923Z
+- **Result**: FAILED
+- **Gates**: typecheck: pass, test: pass
+- **Summary**: All **202 tests pass** across 19 test files, and **typecheck is clean**.
+
+Here's a summary of what was added:
+
+### Changes Made
+
+**`tests/resume.test.ts`** — 5 new tests:
+| Test | What it covers |
+|--
 ## Iteration 1 (Round 1) — [docs] Documentation accuracy
-- **Time**: 2026-03-25T04:42:57.639Z
+- **Time**: 2026-03-25T04:50:14.388Z
 - **Result**: FAILED
 - **Gates**: typecheck: pass, test: pass
-- **Summary**: Types clean, tests pass. Here's a summary of all changes made:
+- **Summary**: Types are clean. Here's my complete audit summary:
 
-## Changes Made
+## Audit Results
 
-### CLAUDE.md — 5 fixes
-1. **Removed** "lightweight same-repo concurrency" from project description
-2. **Removed** `exi
+### ✅ Passing (all acceptance criteria met except one CLAUDE.md edit pending permission)
+
+| Check | Status |
+|---|---|
+| CLAUDE.md
 ## Iteration 2 (Round 1) — [dead-code] Dead code and obsolete references
-- **Time**: 2026-03-25T04:46:18.325Z
+- **Time**: 2026-03-25T04:53:24.853Z
 - **Result**: FAILED
 - **Gates**: typecheck: pass, test: pass
-- **Summary**: All clean. Here's a summary of everything found and fixed:
+- **Summary**: All 202 tests pass and typecheck is clean. Here's a summary of everything found and fixed:
 
 ## Dead Code Audit Results
 
-### Issues Found & Fixed
+### Fixed ✅
 
-| Category | Finding | Fix |
-|----------|---------|-----|
-| **Dead export** | `setVerb
+| Issue | File | Fix |
+|-------|------|-----|
+| Unused import `DEFA

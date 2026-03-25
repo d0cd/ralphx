@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimateCost, getModelPricing, DEFAULT_MODEL } from '../src/cost/pricing.js';
+import { estimateCost, getModelPricing } from '../src/cost/pricing.js';
 
 describe('Cost Pricing', () => {
   describe('getModelPricing', () => {

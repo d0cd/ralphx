@@ -452,6 +452,21 @@ describe('RalphLoop', () => {
     expect(result.exitReason).toBe('converged');
   });
 
+  it('exits immediately when PRD has zero stories', async () => {
+    writeFileSync(join(tmpDir, '.ralph', 'prd.json'), JSON.stringify(makePrd(0)));
+    const agent = makeMockAgent();
+    const loop = new RalphLoop({
+      config: makeConfig({ maxIterations: 10 }),
+      agent,
+      projectDir: tmpDir,
+    });
+
+    const result = await loop.run();
+    // Zero stories means nothing to fail → converged with zero iterations
+    expect(result.exitReason).toBe('converged');
+    expect(result.state.iteration).toBe(0);
+  });
+
   it('re-evaluates passing stories when quality gates fail at round start', async () => {
     // Use a file-based gate: passes when marker file exists, fails when it doesn't
     const markerFile = join(tmpDir, 'gate-marker');

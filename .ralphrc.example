@@ -8,6 +8,5 @@
   "cbNoProgressThreshold": 3,
   "cbSameErrorThreshold": 4,
   "cbCooldownMinutes": 15,
-  "claimTtlMinutes": 45,
   "verbose": false
 }
