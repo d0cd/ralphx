@@ -58,6 +58,11 @@ describe('PRD Tracker', () => {
       expect(() => loadPrd(prdPath)).toThrow('missing required "stories" array');
     });
 
+    it('throws on empty file', () => {
+      writeFileSync(prdPath, '');
+      expect(() => loadPrd(prdPath)).toThrow('Invalid JSON');
+    });
+
     it('throws on missing version or projectName', () => {
       writeFileSync(prdPath, JSON.stringify({ stories: [] }));
       expect(() => loadPrd(prdPath)).toThrow('missing required "version" or "projectName"');
@@ -199,6 +204,13 @@ describe('PRD Tracker', () => {
       prd.stories[0].passes = true;
       prd.stories[1].status = 'deferred';
       expect(allStoriesPass(prd)).toBe(true);
+    });
+
+    it('returns false when all stories are deferred', () => {
+      const prd = makePrd(2);
+      prd.stories[0].status = 'deferred';
+      prd.stories[1].status = 'deferred';
+      expect(allStoriesPass(prd)).toBe(false);
     });
   });
 
