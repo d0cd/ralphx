@@ -18,7 +18,7 @@
   },
   "types": "dist/cli/index.d.ts",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
     "build": "tsc && cp src/cost/models.json dist/cost/models.json && chmod +x dist/cli/index.js",
