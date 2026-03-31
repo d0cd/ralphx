@@ -1,4 +1,4 @@
-# Ralph Next v0.1 — Design Document
+# ralphx v0.1 — Design Document
 
 **Version:** 0.1.0
 **Status:** Implemented
@@ -32,13 +32,13 @@ Out of scope:
 - Hooks platform
 - GitHub issue import
 - Provider-agnostic abstraction beyond immediate needs
-- Same-repo concurrent loops
+- ~~Same-repo concurrent loops~~ (resolved: workspaces now enable this; see §7)
 
 ---
 
 ## 3. Product Definition
 
-**Name:** `ralph-next`
+**Name:** `ralphx`
 
 A CLI tool with a small internal library structure that runs an autonomous coding loop with durable per-run state and hard safety guardrails.
 
@@ -78,17 +78,18 @@ No machine-global run registry needed.
 
 ## 7. Execution Mode
 
-One loop, one repo, one container. Stories run sequentially in priority order; the agent handles its own parallelism via subagents.
+Each workspace runs one sequential loop. Multiple workspaces can run concurrently on the same repo (e.g., `ralphx run dev &` and `ralphx run audit`). Stories within a workspace run sequentially in priority order; the agent handles its own parallelism via subagents.
 
 ---
 
 ## 8. Source Tree
 
 ```text
-ralph-next/
+ralphx/
 ├── src/
 │   ├── cli/
-│   │   └── index.ts
+│   │   ├── index.ts
+│   │   └── helpers.ts
 │   ├── core/
 │   │   ├── loop.ts
 │   │   ├── state-writer.ts
@@ -121,7 +122,6 @@ ralph-next/
 │       ├── agent.ts
 │       └── prd.ts
 ├── tests/
-├── .ralphrc.example
 └── package.json
 ```
 
@@ -130,16 +130,18 @@ ralph-next/
 ## 9. Runtime File Layout
 
 ```text
-.ralph/
-├── PROMPT.md          # Base loop prompt (human-authored)
-├── AGENT.md           # Repo-specific commands/guidance (read-only during runs)
-├── prd.json           # Task list
-├── .ralphrc           # Per-repo config
-└── runs/
-    └── {runId}/
-        ├── run-state.json   # Per-run durable state (single source of truth)
-        ├── loop.log         # Append-only run log
-        └── hint.md          # Optional human message consumed before iteration
+.ralphx/
+└── <workspace>/
+    ├── PROMPT.md          # Base loop prompt (human-authored)
+    ├── AGENT.md           # Repo-specific commands/guidance (read-only during runs)
+    ├── prd.json           # Task list
+    ├── .ralphxrc          # Per-workspace config
+    ├── progress.md        # Loop-managed progress tracking (created/deleted by runs)
+    └── runs/
+        └── {runId}/
+            ├── run-state.json   # Per-run durable state (single source of truth)
+            ├── loop.log         # Append-only run log
+            └── hint.md          # Optional human message consumed before iteration
 ```
 
 ---
@@ -234,7 +236,6 @@ export interface AgentRunOptions {
   allowedTools?: string[];
   sessionId?: string;
   timeoutMs?: number;
-  outputFormat?: 'json' | 'text';
 }
 
 export interface IAgent {
@@ -242,7 +243,6 @@ export interface IAgent {
   readonly supportsSessionContinuity: boolean;
   readonly supportsStructuredOutput: boolean;
   run(options: AgentRunOptions): Promise<AgentRunResult>;
-  parseOutput(raw: string): AgentRunResult;
   validateInstallation(): Promise<{ ok: boolean; version?: string; error?: string }>;
 }
 ```
@@ -297,9 +297,11 @@ export interface PRD {
 
 Every iteration flows through validation.
 
+Quality gates and git commands run with `cwd` set to `projectRoot` (the git repo root), not `projectDir` (the workspace directory). This ensures `npm test`, `tsc`, etc. resolve paths correctly. `projectDir` is used for config, PRD, state, and run data; `projectRoot` is used for validation and git operations.
+
 ### Stages
 1. **Command validation** — run quality gates (typecheck, lint, tests)
-2. **Protected path validation** — reject if protected files modified
+2. **Protected path check** — flag modified protected files as warnings (reported at loop exit, does not fail validation)
 3. **Diff sanity checks** — too many files, large diff, unexpected lockfile changes
 4. **Acceptance alignment** — compare result against story acceptance criteria
 
@@ -318,7 +320,7 @@ export interface ValidationResult {
 }
 ```
 
-Story `passes` set to `true` only when: validation passes + no protected path violations + acceptance criteria satisfied.
+Story `passes` set to `true` when: quality gate validation passes. Protected path violations are reported as warnings at loop exit but do not block story completion.
 
 ---
 
@@ -329,13 +331,14 @@ export type ExitReason =
   | 'converged'
   | 'no_progress'
   | 'max_iterations'
+  | 'max_rounds'
   | 'budget_exceeded'
   | 'circuit_breaker_terminal'
   | 'interrupted'
   | 'validation_failed_repeatedly';
 ```
 
-Exit when: all stories converge (pass), no progress in a round, max iterations, budget exceeded, CB terminal, user interrupt, or repeated validation failures.
+Exit when: all stories converge (pass), no progress in a round, max iterations, max rounds (convergent mode), budget exceeded, CB terminal, user interrupt, or repeated validation failures.
 
 ---
 
@@ -358,11 +361,10 @@ States: `closed` → `open` → `half_open`
 ## 18. Protected Paths
 
 Defaults:
-- `.ralph/AGENT.md`, `.ralph/prd.json`, `.ralph/runs/**`
+- `.ralphx/**` (entire workspace directory)
 - `.env`, `.env.*`
-- `**/*.lock`
 
-Enforced in prompt AND validated after changes.
+Protected path violations are warnings, not failures — they are flagged at loop exit for human review but do not block story completion or fail validation.
 
 ---
 
@@ -372,13 +374,13 @@ On SIGINT/SIGTERM: request stop → wait for iteration → flush state → exit 
 
 On crash: mark `crashed` best-effort.
 
-`resume <runId>` continues from same story.
+`run <workspace> --resume <runId>` continues from same story.
 
 ---
 
 ## 20. Hint Injection
 
-Human writes to `.ralph/runs/{runId}/hint.md` → loop reads before next iteration → prepends to prompt → deletes atomically after consumption.
+Human writes to `.ralphx/<workspace>/runs/{runId}/hint.md` → loop reads before next iteration → prepends to prompt → deletes atomically after consumption.
 
 ---
 
@@ -410,9 +412,13 @@ export class RalphLoop {
 
       for (const story of stories) {
         const result = await agent.run(buildPrompt(story, ...));
-        const validation = await validator.validate(...);
-        updateStoryPasses(story, validation);
+        // Per-story: cheap checks only (protected paths, diff sanity)
+        updateStoryPasses(story, result.exitCode === 0);
       }
+
+      // Quality gates run once at end of round (not per-story)
+      const gateResult = await validator.runQualityGates();
+      if (!gateResult.passed) resetPassingStories();
 
       // convergent: exit when zero changes + all pass
       // backlog: exit when all pass or zero fixes
@@ -445,32 +451,32 @@ export const RalphConfigSchema = z.object({
   cbSameErrorThreshold: z.number().default(4),
   cbCooldownMinutes: z.number().default(15),
   storyMaxConsecutiveFailures: z.number().default(3),
+  convergenceThreshold: z.number().min(1).default(1),
   protectedPaths: z.array(z.string()).optional(),
   allowedTools: z.array(z.string()).optional(),
   verbose: z.boolean().default(false),
 });
 ```
 
-Resolution: Flag > env var > `.ralph/.ralphrc` > defaults
+Resolution: Flag > env var > `.ralphx/<workspace>/.ralphxrc` > defaults
 
 ---
 
 ## 23. CLI Surface
 
 ```bash
-ralph run [--prompt "..." | --context-mode fresh | --max-cost 20 | --max-iterations 50]
-ralph status [--run <runId>]
-ralph logs
-ralph cost
-ralph resume <runId>
-ralph hint --run <runId> "message"
-ralph pause --run <runId>
-ralph init
-ralph import requirements.md
-ralph dry-run
-ralph workflow save <name>
-ralph workflow use <name>
-ralph workflow list
+ralphx init <workspace>
+ralphx run <workspace> [--prompt "..." | --context-mode fresh | --max-cost 20 | --max-iterations 50 | --resume <runId>]
+ralphx status <workspace> [--run <runId>]
+ralphx logs <workspace> [--run <runId>] [-n <lines>]
+ralphx cost <workspace> [--run <runId>]
+ralphx hint <workspace> "message" --run <runId>
+ralphx pause <workspace> --run <runId>
+ralphx dry-run <workspace>
+ralphx import <file> <workspace>
+ralphx workflow save <name> <workspace>
+ralphx workflow use <name> <workspace>
+ralphx workflow list
 ```
 
 ---

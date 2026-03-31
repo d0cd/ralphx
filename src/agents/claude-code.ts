@@ -1,6 +1,7 @@
 import { query, type SDKMessage, type SDKResultSuccess, type SDKResultError } from '@anthropic-ai/claude-agent-sdk';
 import { execFile } from 'node:child_process';
-import type { IAgent, AgentRunResult, AgentRunOptions, TokenUsage } from '../types/agent.js';
+import type { IAgent, AgentRunOptions, TokenUsage } from '../types/agent.js';
+
 
 const API_LIMIT_PATTERNS = [
   'exceeded its usage limit',
@@ -17,10 +18,30 @@ const RATE_LIMIT_PATTERNS = [
 
 function matchesAny(text: string, patterns: string[]): boolean {
   const lower = text.toLowerCase();
-  return patterns.some(p => lower.includes(p.toLowerCase()));
+  return patterns.some(p => lower.includes(p));
 }
 
 type ProgressCallback = (event: string) => void;
+
+function buildResult(fields: {
+  output: string;
+  exitCode: number;
+  usage: TokenUsage | null;
+  sessionId: string | null;
+  durationMs: number;
+}): import('../types/agent.js').AgentRunResult {
+  const isError = fields.exitCode !== 0;
+  return {
+    output: fields.output,
+    exitCode: fields.exitCode,
+    usage: fields.usage,
+    sessionId: fields.sessionId,
+    isApiLimitHit: isError && matchesAny(fields.output, API_LIMIT_PATTERNS),
+    isRateLimitHit: isError && matchesAny(fields.output, RATE_LIMIT_PATTERNS),
+    rawJson: null,
+    durationMs: fields.durationMs,
+  };
+}
 
 export class ClaudeCodeAgent implements IAgent {
   readonly name = 'claude-code';
@@ -35,57 +56,7 @@ export class ClaudeCodeAgent implements IAgent {
     this.onProgress = onProgress;
   }
 
-  parseOutput(raw: string): AgentRunResult {
-    // Keep for test compatibility with JSON fixtures
-    try {
-      const parsed = JSON.parse(raw);
-      const output = parsed.result ?? '';
-      const isError = parsed.is_error ?? false;
-      let usage: TokenUsage | null = null;
-      if (parsed.usage && parsed.usage.input_tokens !== undefined) {
-        usage = {
-          inputTokens: parsed.usage.input_tokens ?? 0,
-          outputTokens: parsed.usage.output_tokens ?? 0,
-          cacheReadTokens: parsed.usage.cache_read_input_tokens ?? 0,
-          cacheWriteTokens: parsed.usage.cache_creation_input_tokens ?? 0,
-        };
-      }
-      return {
-        output,
-        exitCode: isError ? 1 : 0,
-        usage,
-        sessionId: parsed.session_id ?? null,
-        isApiLimitHit: isError && matchesAny(output, API_LIMIT_PATTERNS),
-        isRateLimitHit: isError && matchesAny(output, RATE_LIMIT_PATTERNS),
-        rawJson: parsed,
-        durationMs: 0,
-      };
-    } catch {
-      return {
-        output: raw,
-        exitCode: 1,
-        usage: null,
-        sessionId: null,
-        isApiLimitHit: false,
-        isRateLimitHit: false,
-        rawJson: null,
-        durationMs: 0,
-      };
-    }
-  }
-
-  buildArgs(options: AgentRunOptions): string[] {
-    // Keep for test compatibility
-    const args: string[] = ['-p', options.prompt, '--verbose'];
-    if (options.outputFormat) args.push('--output-format', options.outputFormat);
-    if (options.sessionId) args.push('--resume', options.sessionId);
-    if (options.allowedTools && options.allowedTools.length > 0) {
-      args.push('--allowedTools', options.allowedTools.join(','));
-    }
-    return args;
-  }
-
-  async run(options: AgentRunOptions): Promise<AgentRunResult> {
+  async run(options: AgentRunOptions) {
     const startTime = Date.now();
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
@@ -124,7 +95,6 @@ export class ClaudeCodeAgent implements IAgent {
           if (resultMsg.subtype === 'success') {
             resultOutput = (resultMsg as SDKResultSuccess).result;
           } else {
-            // Error result
             const errMsg = resultMsg as SDKResultError;
             resultOutput = `Agent stopped: ${errMsg.subtype}`;
             if (errMsg.errors?.length) {
@@ -145,43 +115,34 @@ export class ClaudeCodeAgent implements IAgent {
 
       const durationMs = Date.now() - startTime;
 
-      return {
+      return buildResult({
         output: resultOutput,
         exitCode: isError ? 1 : 0,
         usage,
         sessionId,
-        isApiLimitHit: isError && matchesAny(resultOutput, API_LIMIT_PATTERNS),
-        isRateLimitHit: isError && matchesAny(resultOutput, RATE_LIMIT_PATTERNS),
-        rawJson: null,
         durationMs,
-      };
+      });
     } catch (err) {
       const durationMs = Date.now() - startTime;
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = (err instanceof Error ? err.message : String(err));
 
       if (err instanceof Error && err.name === 'AbortError') {
-        return {
+        return buildResult({
           output: `Agent timed out after ${Math.round(durationMs / 1000)}s`,
           exitCode: 1,
           usage: null,
           sessionId: null,
-          isApiLimitHit: false,
-          isRateLimitHit: false,
-          rawJson: null,
           durationMs,
-        };
+        });
       }
 
-      return {
+      return buildResult({
         output: errorMsg,
         exitCode: 1,
         usage: null,
         sessionId: null,
-        isApiLimitHit: matchesAny(errorMsg, API_LIMIT_PATTERNS),
-        isRateLimitHit: matchesAny(errorMsg, RATE_LIMIT_PATTERNS),
-        rawJson: null,
         durationMs,
-      };
+      });
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
@@ -192,7 +153,6 @@ export class ClaudeCodeAgent implements IAgent {
 
     switch (message.type) {
       case 'assistant':
-        // Extract text from the assistant's message content blocks
         if (message.message?.content) {
           for (const block of message.message.content) {
             if (block.type === 'text') {

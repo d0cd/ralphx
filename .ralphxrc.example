@@ -1,5 +1,5 @@
 {
-  "agent": "claude-code",
+  "agentCmd": "claude-code",
   "contextMode": "continue",
   "timeoutMinutes": 20,
   "maxIterations": 50,

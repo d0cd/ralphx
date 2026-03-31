@@ -106,4 +106,56 @@ describe('Context Strategies', () => {
       expect(prompt).toContain('Prior Iterations');
     });
   });
+
+  describe('protected paths in prompts', () => {
+    it('buildFreshPrompt includes protected paths section', () => {
+      const prompt = buildFreshPrompt({
+        story,
+        protectedPaths: ['.ralphx/**', '.env', '.env.*'],
+      });
+      expect(prompt).toContain('### Protected Files');
+      expect(prompt).toContain('Do NOT modify these files:');
+      expect(prompt).toContain('- .ralphx/**');
+      expect(prompt).toContain('- .env');
+      expect(prompt).toContain('- .env.*');
+    });
+
+    it('buildFreshPrompt omits protected paths section when empty', () => {
+      const prompt = buildFreshPrompt({
+        story,
+        protectedPaths: [],
+      });
+      expect(prompt).not.toContain('Protected Files');
+    });
+
+    it('buildFreshPrompt omits protected paths section when undefined', () => {
+      const prompt = buildFreshPrompt({ story });
+      expect(prompt).not.toContain('Protected Files');
+    });
+
+    it('buildContinuePrompt includes protected paths section', () => {
+      const prompt = buildContinuePrompt({
+        story,
+        protectedPaths: ['.ralphx/**', '.env', '.env.*'],
+      });
+      expect(prompt).toContain('### Protected Files');
+      expect(prompt).toContain('Do NOT modify these files:');
+      expect(prompt).toContain('- .ralphx/**');
+      expect(prompt).toContain('- .env');
+      expect(prompt).toContain('- .env.*');
+    });
+
+    it('buildContinuePrompt omits protected paths section when empty', () => {
+      const prompt = buildContinuePrompt({
+        story,
+        protectedPaths: [],
+      });
+      expect(prompt).not.toContain('Protected Files');
+    });
+
+    it('buildContinuePrompt omits protected paths section when undefined', () => {
+      const prompt = buildContinuePrompt({ story });
+      expect(prompt).not.toContain('Protected Files');
+    });
+  });
 });

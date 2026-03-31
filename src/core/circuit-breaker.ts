@@ -11,7 +11,6 @@ interface IterationOutcome {
   madeProgress: boolean;
   error?: string;
   costUsd?: number;
-  validationFailed?: boolean;
 }
 
 export class CircuitBreaker {
@@ -21,7 +20,7 @@ export class CircuitBreaker {
   private sameErrorCount = 0;
   private lastError: string | null = null;
   private openedAt: number | null = null;
-  private clockOffset = 0; // for testing
+  private clockOffset = 0;
 
   constructor(config: CircuitBreakerConfig) {
     this.config = config;
@@ -98,6 +97,11 @@ export class CircuitBreaker {
     const elapsed = now - this.openedAt;
     if (elapsed >= this.config.cooldownMinutes * 60 * 1000) {
       this.state = 'half_open';
+      // Reset counters so the next iteration gets a fair chance
+      // without immediately re-tripping on stale counts
+      this.noProgressCount = 0;
+      this.sameErrorCount = 0;
+      this.lastError = null;
     }
   }
 

@@ -1,4 +1,4 @@
-# Ralph Next v0.1 — Implementation Plan
+# ralphx v0.1 — Implementation Plan
 
 Concrete tasks organized by phase. Each task lists what to build, what tests to write, and the definition of done.
 
@@ -13,7 +13,7 @@ Concrete tasks organized by phase. Each task lists what to build, what tests to 
 - Set up `tsconfig.json` (strict mode)
 - Set up `vitest.config.ts` with coverage
 - Create source tree directories per design
-- Add `.ralphrc.example`
+- Add `.ralphxrc.example`
 
 **Tests:**
 - `npm run build` succeeds with no errors
@@ -42,12 +42,12 @@ Concrete tasks organized by phase. Each task lists what to build, what tests to 
 
 **Build:**
 - `src/types/config.ts` — zod schema (`RalphConfigSchema`) and `RalphConfig` type
-- `src/config/loader.ts` — load from `.ralph/.ralphrc` (JSON), merge env vars, merge CLI flags, apply defaults
+- `src/config/loader.ts` — load from `.ralphx/<workspace>/.ralphxrc` (JSON), merge env vars, merge CLI flags, apply defaults
 - Resolution order: flags > env > file > defaults
 
 **Tests:**
 - `config.loader.test.ts`:
-  - Loads valid `.ralphrc` file
+  - Loads valid `.ralphxrc` file
   - Returns defaults when no file exists
   - Env var overrides file value
   - CLI flag overrides env var
@@ -63,7 +63,7 @@ Concrete tasks organized by phase. Each task lists what to build, what tests to 
 
 **Build:**
 - `src/core/state-writer.ts`
-  - `StateWriter` class: owns a single `RunState`, writes to `.ralph/runs/{runId}/run-state.json`
+  - `StateWriter` class: owns a single `RunState`, writes to `.ralphx/<workspace>/runs/{runId}/run-state.json`
   - Atomic writes: write to temp file, rename
   - Methods: `initialize()`, `recordIteration()`, `recordValidation()`, `setStatus()`, `flush()`
   - Append to `loop.log` on each flush
@@ -90,13 +90,10 @@ Concrete tasks organized by phase. Each task lists what to build, what tests to 
 - `src/agents/claude-code.ts` — `ClaudeCodeAgent` class
   - `validateInstallation()` — check `claude` CLI exists and version
   - `run()` — invoke claude with prompt, parse output
-  - `parseOutput()` — extract structured result from JSON output
-  - Support `--output-format json` for structured parsing
   - Handle API limit and rate limit detection from output
 
 **Tests:**
 - `claude-code.test.ts`:
-  - `parseOutput()` correctly parses fixture JSON output into `AgentRunResult`
   - Handles missing usage fields gracefully (null)
   - Detects `isApiLimitHit` from known error patterns
   - Detects `isRateLimitHit` from known error patterns
@@ -154,16 +151,16 @@ Concrete tasks organized by phase. Each task lists what to build, what tests to 
 
 **Build:**
 - `src/cli/index.ts` — CLI entry point (use `commander`)
-- `ralph run` — create run, start loop
-- `ralph status` — read latest or specified run-state.json, print summary
-- `ralph logs` — tail loop.log for latest or specified run
+- `ralphx run` — create run, start loop
+- `ralphx status` — read latest or specified run-state.json, print summary
+- `ralphx logs` — tail loop.log for latest or specified run
 
 **Tests:**
 - `cli.test.ts`:
-  - `ralph status` with no runs prints "no runs found"
-  - `ralph status` with existing run prints status summary
-  - `ralph logs` prints log content
-  - `ralph run --max-iterations 1` creates a run directory
+  - `ralphx status` with no runs prints "no runs found"
+  - `ralphx status` with existing run prints status summary
+  - `ralphx logs` prints log content
+  - `ralphx run --max-iterations 1` creates a run directory
 
 **Done when:** CLI commands work for basic single-loop workflow.
 
@@ -246,12 +243,12 @@ Before starting Phase 2, audit all Phase 1 code for production readiness:
 - `validator.test.ts` (protected paths):
   - No violation when only non-protected files changed
   - Violation detected when `.env` modified
-  - Violation detected when `.ralph/prd.json` modified
+  - Violation detected when `.ralphx/prd.json` modified
   - Glob patterns work (`**/*.lock` matches `package-lock.json`)
   - Custom protected paths from config are honored
-  - Violations block story completion
+  - Violations are reported as warnings (do not block story completion)
 
-**Done when:** Protected path violations are detected and prevent completion.
+**Done when:** Protected path violations are detected and reported as warnings at loop exit.
 
 ---
 
@@ -268,7 +265,7 @@ Before starting Phase 2, audit all Phase 1 code for production readiness:
 - `validator.test.ts`:
   - All commands pass → `passed: true`
   - One command fails → `passed: false`, correct `commandResults`
-  - Protected path violation → `passed: false`
+  - Protected path violation → warning (does not set `passed: false`)
   - Diff too large → warning in result
   - Too many files changed → warning
   - No quality gates configured → skip command validation, still check paths
@@ -303,7 +300,7 @@ Before starting Phase 2, audit all Phase 1 code for production readiness:
 
 Before starting Phase 3, audit all Phase 2 code for production readiness using the same criteria as Phase 1 audit gate, plus:
 
-- **Safety invariants hold:** Budget limits actually stop the loop. CB actually trips. Protected paths actually block completion.
+- **Safety invariants hold:** Budget limits actually stop the loop. CB actually trips. Protected path violations are flagged as warnings at loop exit.
 - **Integration between modules:** Validator, CB, exit detection, and cost tracker are wired into the loop correctly.
 - **No hardcoded TODOs in critical paths:** Cost calculation must use real estimates, not zero.
 
@@ -334,7 +331,7 @@ Before starting Phase 3, audit all Phase 2 code for production readiness using t
 ### Task 3.2: Hint Injection
 
 **Build:**
-- In loop: before building prompt, check for `.ralph/runs/{runId}/hint.md`
+- In loop: before building prompt, check for `.ralphx/<workspace>/runs/{runId}/hint.md`
 - If exists: read content, prepend to prompt, delete file atomically
 
 **Tests:**
@@ -351,13 +348,13 @@ Before starting Phase 3, audit all Phase 2 code for production readiness using t
 ### Task 3.3: Dry Run
 
 **Build:**
-- `ralph dry-run` — run full setup (config, PRD load, agent validation, prompt build) but do not invoke agent
+- `ralphx dry-run` — run full setup (config, PRD load, agent validation, prompt build) but do not invoke agent
 - Print: resolved config, next story, assembled prompt, validation commands
 
 **Tests:**
 - `cli.test.ts` addition:
-  - `ralph dry-run` exits 0 with expected output sections
-  - `ralph dry-run` with invalid config exits non-zero
+  - `ralphx dry-run` exits 0 with expected output sections
+  - `ralphx dry-run` with invalid config exits non-zero
 
 **Done when:** Dry run shows what would happen without executing.
 
@@ -368,7 +365,7 @@ Before starting Phase 3, audit all Phase 2 code for production readiness using t
 **Build:**
 - `src/core/resume.ts`
   - `findResumableRun(runId)` — load run-state.json, verify status is `interrupted` or `paused`
-  - `resumeRun(runId)` — restore state, continue loop
+  - `findResumableRun(projectDir, runId)` — load and validate resumable run state
 
 **Tests:**
 - `resume.test.ts`:
@@ -384,19 +381,19 @@ Before starting Phase 3, audit all Phase 2 code for production readiness using t
 ### Task 3.5: Remaining CLI Commands
 
 **Build:**
-- `ralph cost` — print cost summary from run state
-- `ralph resume <runId>` — wire to resume module
-- `ralph hint --run <runId> "msg"` — write hint.md
-- `ralph pause --run <runId>` — set run status to paused
-- `ralph init` — create `.ralph/` directory with template files
-- `ralph import <file>` — parse markdown requirements into prd.json
+- `ralphx cost <workspace>` — print cost summary from run state
+- `ralphx run <workspace> --resume <runId>` — resume a previous run
+- `ralphx hint <workspace> "msg" --run <runId>` — write hint.md
+- `ralphx pause <workspace> --run <runId>` — set run status to paused
+- `ralphx init <workspace>` — create `.ralphx/<workspace>/` directory with template files
+- `ralphx import <file> <workspace>` — parse markdown requirements into prd.json
 
 **Tests:**
-- `ralph cost` shows correct totals
-- `ralph hint` writes hint.md to correct run directory
-- `ralph pause` updates run-state.json status
-- `ralph init` creates expected directory structure
-- `ralph import` produces valid prd.json from markdown input
+- `ralphx cost <workspace>` shows correct totals
+- `ralphx hint <workspace>` writes hint.md to correct run directory
+- `ralphx pause <workspace>` updates run-state.json status
+- `ralphx init <workspace>` creates expected `.ralphx/<workspace>/` directory structure
+- `ralphx import <file> <workspace>` produces valid prd.json from markdown input
 
 **Done when:** All CLI commands from the design are functional.
 
@@ -406,8 +403,8 @@ Before starting Phase 3, audit all Phase 2 code for production readiness using t
 
 **Build:**
 - `src/workflow/manager.ts`
-  - `saveWorkflow(name, projectDir)` — save .ralph/ config as reusable workflow
-  - `useWorkflow(name, projectDir)` — apply saved workflow to current project
+  - `saveWorkflow(name, workspace, projectDir)` — save `.ralphx/<workspace>/` config as reusable workflow
+  - `useWorkflow(name, workspace, projectDir)` — apply saved workflow to workspace
   - `listWorkflows()` — list available workflows
 
 **Tests:**
@@ -443,12 +440,12 @@ Before starting Phase 3, audit all Phase 2 code for production readiness using t
 
 Each phase ends with a mandatory audit gate. No phase starts until the prior audit passes.
 
-Total: 20 tasks, 19 test files, targeting 80%+ coverage.
+Total: 20 tasks, 23 test files, targeting 80%+ coverage.
 
 ---
 
 ## Implementation Status
 
-All phases complete. 202 tests passing across 19 test files. Build and types clean.
+All phases complete. 400 tests passing across 24 test files. Build and types clean.
 
 Each phase passed a mandatory audit gate before the next began. See audit gate sections above for criteria.

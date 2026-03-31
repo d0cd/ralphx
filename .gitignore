@@ -1,6 +1,7 @@
 node_modules/
 dist/
-.ralph/runs/
+coverage/
+.ralphx/
 *.tsbuildinfo
 
 # Credentials & secrets

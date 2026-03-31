@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { Command } from 'commander';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { Command, InvalidArgumentError } from 'commander';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig } from '../config/loader.js';
 import { loadPrd } from '../prd/tracker.js';
@@ -10,472 +10,668 @@ import { findResumableRun } from '../core/resume.js';
 import { RalphLoop } from '../core/loop.js';
 import { ClaudeCodeAgent } from '../agents/claude-code.js';
 import { saveWorkflow, useWorkflow, listWorkflows } from '../workflow/manager.js';
+import { resolveProjectDir, getWorkspaceDir, getRunsDir, findLatestRun, loadRunState, validatePathSegment } from './helpers.js';
+import { readJsonFile, atomicWriteJson } from '../sync/atomic-write.js';
 import type { RalphConfig } from '../types/config.js';
+import type { ExitReason, RunState } from '../types/state.js';
+
+/** Parse an integer CLI option, using InvalidArgumentError for clean Commander error output. */
+function parseIntStrict(value: string): number {
+  const n = parseInt(value, 10);
+  if (Number.isNaN(n)) throw new InvalidArgumentError(`"${value}" is not a valid integer`);
+  return n;
+}
+
+/** Parse a float CLI option, using InvalidArgumentError for clean Commander error output. */
+function parseFloatStrict(value: string): number {
+  const n = parseFloat(value);
+  if (Number.isNaN(n)) throw new InvalidArgumentError(`"${value}" is not a valid number`);
+  return n;
+}
+
+const EXIT_REASON_LABELS: Record<ExitReason, string> = {
+  converged: 'All stories passed quality gates',
+  no_progress: 'Agent made no progress — review stories and acceptance criteria',
+  max_iterations: 'Hit iteration limit — increase with --max-iterations or .ralphxrc',
+  max_rounds: 'Hit round limit — increase with maxRounds in .ralphxrc',
+  budget_exceeded: 'Cost or token budget exceeded — increase with --max-cost or .ralphxrc',
+  circuit_breaker_terminal: 'Repeated failures tripped the circuit breaker — check logs for root cause',
+  interrupted: 'Stopped by signal (Ctrl-C or SIGTERM) — resume with --resume',
+  validation_failed_repeatedly: 'Quality gates failed 5+ times in a row — check gate commands with dry-run',
+};
+
+function exitReasonLabel(reason: ExitReason): string {
+  return EXIT_REASON_LABELS[reason] ?? reason;
+}
+
+/** Wrap a CLI action with consistent error handling: log the error and exit 1. */
+function cliAction(label: string, fn: () => void | Promise<void>, hint?: string): () => Promise<void> {
+  return async () => {
+    try {
+      await fn();
+    } catch (e) {
+      console.error(`${label}: ${(e instanceof Error ? e.message : String(e))}`);
+      if (hint) console.error(hint);
+      process.exit(1);
+    }
+  };
+}
+
+function requireWorkspace(projectDir: string, workspace: string): string {
+  const wsDir = getWorkspaceDir(projectDir, workspace);
+  if (!existsSync(join(wsDir, 'prd.json'))) {
+    console.error(`Workspace "${workspace}" does not exist.`);
+    console.error(`Run \`ralphx init ${workspace}\` first.`);
+    process.exit(1);
+  }
+  return wsDir;
+}
+
+function requireRunId(projectDir: string, workspace: string, explicitRunId?: string): string {
+  if (explicitRunId) {
+    validatePathSegment(explicitRunId, 'Run ID');
+  }
+  const runId = explicitRunId ?? findLatestRun(projectDir, workspace);
+  if (!runId) {
+    console.error(`No runs found in workspace "${workspace}".`);
+    console.error(`Start one with: ralphx run ${workspace}`);
+    process.exit(1);
+  }
+  return runId;
+}
+
+function runNotFound(runId: string, workspace: string): never {
+  console.error(`Run "${runId}" not found in workspace "${workspace}".`);
+  console.error(`Use \`ralphx status ${workspace}\` to see available runs.`);
+  process.exit(1);
+}
+
+const KV_PAD = 18;
+
+function kv(key: string, value: string | number): string {
+  return `${(key + ':').padEnd(KV_PAD)}${value}`;
+}
 
 const program = new Command();
 
 program
-  .name('ralph')
-  .description('Safe, resumable autonomous coding loop for AI coding agents')
+  .name('ralphx')
+  .description(`Safe, resumable autonomous coding loop for AI coding agents.
+
+Every command takes a <workspace> name as its first argument.
+Each workspace is an independent environment with its own PRD,
+prompt, config, and run history, stored at .ralphx/<workspace>/.
+
+Quick start:
+  $ ralphx init audit
+  $ ralphx import requirements.md audit
+  $ ralphx run audit --max-iterations 20 --max-cost 5.00
+  $ ralphx status audit
+
+Workspaces:
+  You can run multiple independent loops on the same repo:
+  $ ralphx init dev
+  $ ralphx init audit
+  $ ralphx run dev &
+  $ ralphx run audit
+
+Workspace directory layout:
+  .ralphx/<workspace>/
+  ├── prd.json       Task definitions and acceptance criteria
+  ├── PROMPT.md      Instructions for the coding loop
+  ├── AGENT.md       Repo-specific agent guidance
+  ├── .ralphxrc      Configuration (budget, timeouts, etc.)
+  └── runs/          Run history (one subdirectory per run)
+
+Currently supports Claude Code as the agent backend.`)
   .version('0.1.0');
-
-function resolveProjectDir(): string {
-  return process.cwd();
-}
-
-function getRalphDir(projectDir: string): string {
-  return join(projectDir, '.ralph');
-}
-
-function getRunsDir(projectDir: string): string {
-  return join(getRalphDir(projectDir), 'runs');
-}
-
-function findLatestRun(projectDir: string): string | null {
-  const runsDir = getRunsDir(projectDir);
-  if (!existsSync(runsDir)) return null;
-
-  let dirEntries: import('node:fs').Dirent[];
-  try {
-    dirEntries = readdirSync(runsDir, { withFileTypes: true });
-  } catch (err) {
-    console.error(`Failed to read runs directory ${runsDir}: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-
-  const entries = dirEntries
-    .filter(e => e.isDirectory())
-    .map(e => {
-      const statePath = join(runsDir, e.name, 'run-state.json');
-      if (!existsSync(statePath)) return null;
-      try {
-        const state = JSON.parse(readFileSync(statePath, 'utf-8'));
-        return { name: e.name, updatedAt: state.updatedAt ?? '' };
-      } catch (err) {
-        console.error(`Warning: could not read ${statePath}: ${err instanceof Error ? err.message : String(err)}`);
-        return null;
-      }
-    })
-    .filter((e): e is { name: string; updatedAt: string } => e !== null)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-
-  return entries[0]?.name ?? null;
-}
-
-function loadRunState(projectDir: string, runId: string): Record<string, unknown> | null {
-  const statePath = join(getRunsDir(projectDir), runId, 'run-state.json');
-  if (!existsSync(statePath)) return null;
-  try {
-    return JSON.parse(readFileSync(statePath, 'utf-8'));
-  } catch (err) {
-    console.error(`Warning: could not read run state for "${runId}": ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-}
 
 // --- Commands ---
 
 program
   .command('init')
-  .description('Initialize .ralph directory with template files')
-  .action(() => {
-    const projectDir = resolveProjectDir();
-    const ralphDir = getRalphDir(projectDir);
+  .description('Create a new workspace with template files.')
+  .argument('<workspace>', 'Workspace name (e.g., "audit", "dev", "feature-auth")')
+  .addHelpText('after', `
+Examples:
+  $ ralphx init audit           Create .ralphx/audit/ with template files
+  $ ralphx init dev             Create .ralphx/dev/ with template files
 
-    try {
-      mkdirSync(join(ralphDir, 'runs'), { recursive: true });
+Created files:
+  .ralphx/<workspace>/
+  ├── PROMPT.md      Placeholder loop prompt (edit to describe what the loop should do)
+  ├── AGENT.md       Repo-specific agent guidance (test commands, conventions)
+  ├── prd.json       Empty PRD with template structure (add stories here)
+  ├── .ralphxrc      Default config: agent=claude-code, contextMode=continue,
+  │                  timeoutMinutes=20, maxIterations=50
+  └── runs/          Directory for run history (created automatically)
 
-      const promptPath = join(ralphDir, 'PROMPT.md');
+After init, edit these files to configure your loop:
+  .ralphx/<workspace>/prd.json    Define stories with acceptance criteria
+  .ralphx/<workspace>/PROMPT.md   Write the loop prompt
+  .ralphx/<workspace>/AGENT.md    Add repo-specific commands and guidance
+  .ralphx/<workspace>/.ralphxrc   Set budget, timeouts, and other config`)
+  .action((workspace: string) => cliAction(
+    'Failed to initialize workspace',
+    () => {
+      const projectDir = resolveProjectDir();
+      const wsDir = getWorkspaceDir(projectDir, workspace);
+
+      mkdirSync(join(wsDir, 'runs'), { recursive: true });
+
+      const promptPath = join(wsDir, 'PROMPT.md');
       if (!existsSync(promptPath)) {
         writeFileSync(promptPath, '# Loop Prompt\n\nDescribe what the loop should do.\n');
       }
 
-      const agentPath = join(ralphDir, 'AGENT.md');
+      const agentPath = join(wsDir, 'AGENT.md');
       if (!existsSync(agentPath)) {
         writeFileSync(agentPath, '# Agent Instructions\n\nRepo-specific commands and guidance.\n');
       }
 
-      const prdPath = join(ralphDir, 'prd.json');
+      const prdPath = join(wsDir, 'prd.json');
       if (!existsSync(prdPath)) {
         writeFileSync(prdPath, JSON.stringify({
           version: '1.0',
-          projectName: 'my-project',
+          projectName: workspace,
           stories: [],
           qualityGates: {},
         }, null, 2));
       }
 
-      const rcPath = join(ralphDir, '.ralphrc');
+      const rcPath = join(wsDir, '.ralphxrc');
       if (!existsSync(rcPath)) {
         writeFileSync(rcPath, JSON.stringify({
-          agent: 'claude-code',
           contextMode: 'continue',
           timeoutMinutes: 20,
           maxIterations: 50,
         }, null, 2));
       }
 
-      console.log(`Initialized .ralph/ in ${projectDir}`);
-    } catch (e) {
-      console.error(`Failed to initialize .ralph/: ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    }
-  });
+      console.log(`Initialized workspace "${workspace}" at ${'.ralphx'}/${workspace}/`);
+    },
+    'Check that you have write permissions to the current directory.',
+  )());
 
 program
   .command('run')
-  .description('Start an autonomous coding loop')
-  .option('--prompt <text>', 'Prompt text to prepend to the loop prompt')
-  .option('--context-mode <mode>', 'Context mode: continue or fresh')
-  .option('--max-iterations <n>', 'Maximum iterations', parseInt)
-  .option('--max-cost <usd>', 'Maximum cost in USD', parseFloat)
-  .option('--timeout <minutes>', 'Per-iteration timeout in minutes', parseInt)
-  .option('--verbose', 'Enable verbose logging')
-  .option('--resume <runId>', 'Resume a previous run')
-  .action(async (opts) => {
-    const projectDir = resolveProjectDir();
+  .description('Start or resume an autonomous coding loop.')
+  .argument('<workspace>', 'Workspace name')
+  .option('--prompt <text>', 'Text to prepend to the loop prompt')
+  .option('--context-mode <mode>', 'Context mode: "continue" (reuse session) or "fresh" (new session each iteration)')
+  .option('--max-iterations <n>', 'Maximum number of iterations before stopping', parseIntStrict)
+  .option('--max-cost <usd>', 'Maximum estimated cost in USD before stopping', parseFloatStrict)
+  .option('--timeout <minutes>', 'Per-iteration timeout in minutes', parseIntStrict)
+  .option('--verbose', 'Enable verbose logging (shows agent progress events)')
+  .option('--resume <runId>', 'Resume a paused or interrupted run by its ID')
+  .addHelpText('after', `
+Examples:
+  $ ralphx run audit                             Run with workspace defaults
+  $ ralphx run dev --max-iterations 10           Limit to 10 iterations
+  $ ralphx run audit --max-cost 5.00 --verbose   Cap at $5, show progress
+  $ ralphx run dev --resume abc123               Resume a previous run
+  $ ralphx run audit --prompt "Focus on auth"    Prepend text to the loop prompt
+  $ ralphx run dev --context-mode fresh          New session each iteration
 
-    if (!existsSync(join(getRalphDir(projectDir), 'prd.json'))) {
-      console.error('No .ralph/prd.json found. Run `ralph init` first.');
-      process.exit(1);
-    }
+Config resolution (highest priority first):
+  CLI flags > RALPH_* env vars > .ralphxrc file > defaults
 
-    try {
+Exit codes:
+  0  All stories converged (passed quality gates)
+  1  Stopped for any other reason (budget, circuit breaker, no progress)
+  Check .ralphx/<workspace>/runs/<id>/run-state.json for detailed exit reason.`)
+  .action(async (workspace: string, opts) => cliAction(
+    'Run failed',
+    async () => {
+      const projectDir = resolveProjectDir();
+      const wsDir = requireWorkspace(projectDir, workspace);
+
       const flags: Partial<RalphConfig> = {};
       if (opts.contextMode) flags.contextMode = opts.contextMode;
-      if (opts.maxIterations) flags.maxIterations = opts.maxIterations;
-      if (opts.maxCost) flags.maxCostUsd = opts.maxCost;
-      if (opts.timeout) flags.timeoutMinutes = opts.timeout;
+      if (opts.maxIterations !== undefined) flags.maxIterations = opts.maxIterations;
+      if (opts.maxCost !== undefined) flags.maxCostUsd = opts.maxCost;
+      if (opts.timeout !== undefined) flags.timeoutMinutes = opts.timeout;
       if (opts.verbose) flags.verbose = true;
 
-      const config = loadConfig({ projectDir, flags });
+      const config = loadConfig({ projectDir: wsDir, flags });
       const agent = new ClaudeCodeAgent(config.agentCmd, (event) => {
         if (config.verbose) {
           console.log(`  ${event}`);
         }
       });
 
+      let previousState: RunState | undefined;
+      if (opts.resume) {
+        validatePathSegment(opts.resume, 'Run ID');
+        previousState = findResumableRun(wsDir, opts.resume) ?? undefined;
+        if (!previousState) {
+          console.error(`Run "${opts.resume}" is not resumable (must be interrupted or paused, with valid state).`);
+          process.exit(1);
+        }
+        console.log(`Resuming run "${opts.resume}" from iteration ${previousState.iteration}`);
+      }
+
       const loop = new RalphLoop({
         config,
         agent,
-        projectDir,
+        projectDir: wsDir,
+        projectRoot: projectDir,
         runId: opts.resume,
+        previousState,
       });
 
       const result = await loop.run();
 
       console.log('');
-      console.log(`Exit reason:  ${result.exitReason}`);
-      console.log(`Iterations:   ${result.state.iteration}`);
-      console.log(`Cost:         ~$${result.state.cost.estimatedCostUsd.toFixed(4)}`);
+      console.log(kv('Exit reason', result.exitReason));
+      console.log(kv('Iterations', result.state.iteration));
+      console.log(kv('Cost', `~$${result.state.cost.estimatedCostUsd.toFixed(4)}`));
+      console.log(`  → ${exitReasonLabel(result.exitReason)}`);
+      if (result.exitReason !== 'converged') {
+        console.log(`  → Use \`ralphx logs ${workspace}\` to investigate.`);
+      }
 
       process.exit(result.exitReason === 'converged' ? 0 : 1);
-    } catch (e) {
-      console.error(`Run failed: ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    }
-  });
+    },
+    `Check ${'.ralphx'}/${workspace}/${'prd.json'} and ${'.ralphx'}/${workspace}/${'.ralphxrc'} for configuration errors.\nUse \`ralphx dry-run ${workspace}\` to preview settings.`,
+  )());
 
 program
   .command('status')
-  .description('Show status of runs')
-  .option('--run <runId>', 'Show specific run')
-  .action((opts) => {
-    const projectDir = resolveProjectDir();
-    const runId = opts.run ?? findLatestRun(projectDir);
+  .description('Show the status of the latest or a specific run.')
+  .argument('<workspace>', 'Workspace name')
+  .option('--run <runId>', 'Show a specific run instead of the latest')
+  .addHelpText('after', `
+Examples:
+  $ ralphx status audit                Show latest run in "audit" workspace
+  $ ralphx status dev --run abc123     Show a specific run`)
+  .action((workspace: string, opts) => cliAction(
+    'Failed to read status',
+    () => {
+      const projectDir = resolveProjectDir();
+      requireWorkspace(projectDir, workspace);
+      const runId = requireRunId(projectDir, workspace, opts.run);
 
-    if (!runId) {
-      console.log('No runs found.');
-      return;
-    }
+      const state = loadRunState(projectDir, workspace, runId);
+      if (!state) runNotFound(runId, workspace);
 
-    const state = loadRunState(projectDir, runId);
-    if (!state) {
-      console.error(`Run "${runId}" not found.`);
-      process.exit(1);
-    }
-
-    const cost = state.cost as Record<string, unknown> | undefined;
-    console.log(`Run:        ${state.runId}`);
-    console.log(`Status:     ${state.status}`);
-    console.log(`Iteration:  ${state.iteration}`);
-    console.log(`Agent:      ${state.agent}`);
-    console.log(`Cost:       ~$${(cost?.estimatedCostUsd as number ?? 0).toFixed(4)}`);
-    console.log(`Started:    ${state.startedAt}`);
-    console.log(`Updated:    ${state.updatedAt}`);
-  });
+      console.log(kv('Run', state.runId));
+      console.log(kv('Status', state.status));
+      console.log(kv('Iteration', state.iteration ?? 0));
+      console.log(kv('Agent', state.agent ?? 'unknown'));
+      console.log(kv('Cost', `~$${(state.cost?.estimatedCostUsd ?? 0).toFixed(4)}`));
+      console.log(kv('Started', state.startedAt ?? 'N/A'));
+      console.log(kv('Updated', state.updatedAt ?? 'N/A'));
+      if (state.currentStoryTitle) {
+        console.log(kv('Story', state.currentStoryTitle));
+      }
+      if (state.exitReason) {
+        console.log(kv('Exit reason', state.exitReason));
+        console.log(`  → ${exitReasonLabel(state.exitReason)}`);
+      }
+      const logPath = join(getRunsDir(projectDir, workspace), runId, 'loop.log');
+      if (existsSync(logPath)) {
+        console.log('');
+        console.log(kv('Logs', `ralphx logs ${workspace}` + (opts.run ? ` --run ${opts.run}` : '')));
+      }
+    },
+    `Check that workspace "${workspace}" has runs.\nList runs with: ralphx status ${workspace}`,
+  )());
 
 program
   .command('logs')
-  .description('Show loop log for a run')
-  .option('--run <runId>', 'Show specific run')
-  .option('-n, --lines <count>', 'Number of lines to show', '50')
-  .action((opts) => {
-    const projectDir = resolveProjectDir();
-    const runId = opts.run ?? findLatestRun(projectDir);
+  .description('Show the loop log for the latest or a specific run.')
+  .argument('<workspace>', 'Workspace name')
+  .option('--run <runId>', 'Show a specific run instead of the latest')
+  .option('-n, --lines <count>', 'Number of lines to show (from the end)', '50')
+  .addHelpText('after', `
+Examples:
+  $ ralphx logs audit                  Last 50 lines of latest run
+  $ ralphx logs dev -n 100            Last 100 lines
+  $ ralphx logs audit --run abc123    Specific run`)
+  .action((workspace: string, opts) => cliAction(
+    'Failed to read logs',
+    () => {
+      const projectDir = resolveProjectDir();
+      requireWorkspace(projectDir, workspace);
+      const runId = requireRunId(projectDir, workspace, opts.run);
 
-    if (!runId) {
-      console.error('No runs found.');
-      process.exit(1);
-    }
+      const logPath = join(getRunsDir(projectDir, workspace), runId, 'loop.log');
+      if (!existsSync(logPath)) {
+        console.log(`No log file for run "${runId}". The run may not have produced output yet.`);
+        return;
+      }
 
-    const logPath = join(getRunsDir(projectDir), runId, 'loop.log');
-    if (!existsSync(logPath)) {
-      console.error(`No log file for run "${runId}".`);
-      process.exit(1);
-    }
-
-    let content: string;
-    try {
-      content = readFileSync(logPath, 'utf-8');
-    } catch (err) {
-      console.error(`Failed to read log file ${logPath}: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
-    }
-    const lines = content.split('\n').filter(l => l.length > 0);
-    const count = parseInt(opts.lines, 10);
-    const tail = lines.slice(-count).join('\n');
-    process.stdout.write(tail);
-  });
+      const content = readFileSync(logPath, 'utf-8');
+      const lines = content.split('\n').filter(l => l.length > 0);
+      if (lines.length === 0) {
+        console.log(`Log file for run "${runId}" is empty.`);
+        return;
+      }
+      const count = parseIntStrict(opts.lines);
+      if (count <= 0) {
+        console.error(`Invalid line count: "${opts.lines}". Provide a positive integer (e.g., -n 50).`);
+        process.exit(1);
+      }
+      const tail = lines.slice(-count).join('\n');
+      process.stdout.write(tail + '\n');
+    },
+    `Check that workspace "${workspace}" has runs with log output.\nStart a run with: ralphx run ${workspace}`,
+  )());
 
 program
   .command('cost')
-  .description('Show cost summary for a run')
-  .option('--run <runId>', 'Show specific run')
-  .action((opts) => {
-    const projectDir = resolveProjectDir();
-    const runId = opts.run ?? findLatestRun(projectDir);
+  .description('Show token usage and cost breakdown for a run.')
+  .argument('<workspace>', 'Workspace name')
+  .option('--run <runId>', 'Show a specific run instead of the latest')
+  .addHelpText('after', `
+Examples:
+  $ ralphx cost audit                  Cost of latest run
+  $ ralphx cost dev --run abc123      Cost of specific run
 
-    if (!runId) {
-      console.log('No runs found.');
-      return;
-    }
+All costs are estimates based on public model pricing.`)
+  .action((workspace: string, opts) => cliAction(
+    'Failed to read cost data',
+    () => {
+      const projectDir = resolveProjectDir();
+      requireWorkspace(projectDir, workspace);
+      const runId = requireRunId(projectDir, workspace, opts.run);
 
-    const state = loadRunState(projectDir, runId);
-    if (!state) {
-      console.error(`Run "${runId}" not found.`);
-      process.exit(1);
-    }
+      const state = loadRunState(projectDir, workspace, runId);
+      if (!state) runNotFound(runId, workspace);
 
-    const cost = state.cost as Record<string, number> | undefined;
-    if (!cost) {
-      console.error('No cost data available.');
-      process.exit(1);
-    }
-
-    console.log(`Run:              ${state.runId}`);
-    console.log(`Iterations:       ${state.iteration}`);
-    console.log(`Input tokens:     ${cost.totalInputTokens?.toLocaleString() ?? 0}`);
-    console.log(`Output tokens:    ${cost.totalOutputTokens?.toLocaleString() ?? 0}`);
-    console.log(`Cache read:       ${cost.totalCacheReadTokens?.toLocaleString() ?? 0}`);
-    console.log(`Cache write:      ${cost.totalCacheWriteTokens?.toLocaleString() ?? 0}`);
-    console.log(`Estimated cost:   ~$${(cost.estimatedCostUsd ?? 0).toFixed(4)}`);
-  });
+      console.log(kv('Run', state.runId));
+      console.log(kv('Iterations', state.iteration ?? 0));
+      if (!state.cost) {
+        console.log(kv('Cost data', 'not yet available (run may still be starting)'));
+        return;
+      }
+      console.log(kv('Input tokens', (state.cost.totalInputTokens ?? 0).toLocaleString()));
+      console.log(kv('Output tokens', (state.cost.totalOutputTokens ?? 0).toLocaleString()));
+      console.log(kv('Cache read', (state.cost.totalCacheReadTokens ?? 0).toLocaleString()));
+      console.log(kv('Cache write', (state.cost.totalCacheWriteTokens ?? 0).toLocaleString()));
+      console.log(kv('Estimated cost', `~$${(state.cost.estimatedCostUsd ?? 0).toFixed(4)}`));
+    },
+    `Check that workspace "${workspace}" has completed runs.\nStart a run with: ralphx run ${workspace}`,
+  )());
 
 program
   .command('hint')
-  .description('Send a hint to a running loop')
+  .description('Inject a message into a running loop. The agent will see it on its next iteration.')
+  .argument('<workspace>', 'Workspace name')
+  .argument('<message>', 'Hint message for the agent')
   .requiredOption('--run <runId>', 'Target run ID')
-  .argument('<message>', 'Hint message')
-  .action((message: string, opts: { run: string }) => {
-    const projectDir = resolveProjectDir();
-    const runDir = join(getRunsDir(projectDir), opts.run);
+  .addHelpText('after', `
+Examples:
+  $ ralphx hint audit "Focus on the auth module" --run abc123
+  $ ralphx hint dev "Skip story-3, it is blocked" --run abc123
 
-    if (!existsSync(runDir)) {
-      console.error(`Run "${opts.run}" not found.`);
-      process.exit(1);
-    }
+The hint is written to .ralphx/<workspace>/runs/<runId>/hint.md
+and consumed (deleted) by the loop on its next iteration.`)
+  .action((workspace: string, message: string, opts: { run: string }) => cliAction(
+    'Failed to write hint',
+    () => {
+      const projectDir = resolveProjectDir();
+      requireWorkspace(projectDir, workspace);
+      validatePathSegment(opts.run, 'Run ID');
+      const runDir = join(getRunsDir(projectDir, workspace), opts.run);
 
-    const hintPath = join(runDir, 'hint.md');
-    try {
+      if (!existsSync(runDir)) runNotFound(opts.run, workspace);
+
+      const hintPath = join(runDir, 'hint.md');
       writeFileSync(hintPath, message);
       console.log(`Hint written for run "${opts.run}".`);
-    } catch (e) {
-      console.error(`Failed to write hint: ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    }
-  });
+    },
+    `Ensure the run exists with: ralphx status ${workspace}`,
+  )());
 
 program
   .command('pause')
-  .description('Request a running loop to pause')
+  .description('Request a running loop to pause after its current iteration.')
+  .argument('<workspace>', 'Workspace name')
   .requiredOption('--run <runId>', 'Target run ID')
-  .action((opts: { run: string }) => {
-    const projectDir = resolveProjectDir();
-    const statePath = join(getRunsDir(projectDir), opts.run, 'run-state.json');
+  .addHelpText('after', `
+Examples:
+  $ ralphx pause audit --run abc123
 
-    if (!existsSync(statePath)) {
-      console.error(`Run "${opts.run}" not found.`);
-      process.exit(1);
-    }
+The run will finish its current iteration, save state, and stop.
+Resume later with: ralphx run <workspace> --resume <runId>`)
+  .action((workspace: string, opts: { run: string }) => cliAction(
+    'Failed to pause run',
+    () => {
+      const projectDir = resolveProjectDir();
+      requireWorkspace(projectDir, workspace);
+      validatePathSegment(opts.run, 'Run ID');
 
-    try {
-      const state = JSON.parse(readFileSync(statePath, 'utf-8'));
+      const state = loadRunState(projectDir, workspace, opts.run);
+      if (!state) runNotFound(opts.run, workspace);
+
       if (state.status !== 'running') {
         console.log(`Run "${opts.run}" is not running (status: ${state.status}).`);
         return;
       }
-      state.status = 'paused';
-      state.updatedAt = new Date().toISOString();
-      writeFileSync(statePath, JSON.stringify(state, null, 2));
-      console.log(`Run "${opts.run}" marked as paused.`);
-    } catch (e) {
-      console.error(`Failed to pause run: ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    }
-  });
 
-program
-  .command('resume')
-  .description('Resume an interrupted or paused run')
-  .argument('<runId>', 'Run ID to resume')
-  .action((runId: string) => {
-    const projectDir = resolveProjectDir();
-    const state = findResumableRun(projectDir, runId);
-
-    if (!state) {
-      console.error(`Run "${runId}" is not resumable (must be interrupted or paused).`);
-      process.exit(1);
-    }
-
-    console.log(`Run "${runId}" is resumable.`);
-    console.log(`Status:     ${state.status}`);
-    console.log(`Iteration:  ${state.iteration}`);
-    console.log(`Cost:       ~$${state.cost.estimatedCostUsd.toFixed(4)}`);
-    console.log('');
-    console.log('To resume, use: ralph run --resume ' + runId);
-  });
+      const statePath = join(getRunsDir(projectDir, workspace), opts.run, 'run-state.json');
+      const current = readJsonFile<RunState>(statePath);
+      atomicWriteJson(statePath, { ...current, status: 'paused', updatedAt: new Date().toISOString() });
+      console.log(`Pause requested for run "${opts.run}". The loop will pause after the current iteration.`);
+      console.log(`Resume with: ralphx run ${workspace} --resume ${opts.run}`);
+    },
+    `Ensure the run exists with: ralphx status ${workspace}`,
+  )());
 
 program
   .command('dry-run')
-  .description('Show what would happen without executing')
-  .action(() => {
-    const projectDir = resolveProjectDir();
-    const ralphDir = getRalphDir(projectDir);
+  .description('Show resolved config, PRD summary, and quality gates without running the loop.')
+  .argument('<workspace>', 'Workspace name')
+  .addHelpText('after', `
+Examples:
+  $ ralphx dry-run audit
 
-    if (!existsSync(join(ralphDir, 'prd.json'))) {
-      console.error('No .ralph/prd.json found. Run `ralph init` first.');
-      process.exit(1);
-    }
+Useful for verifying your workspace is configured correctly before starting a run.`)
+  .action((workspace: string) => cliAction(
+    'Dry run failed',
+    () => {
+      const projectDir = resolveProjectDir();
+      const wsDir = requireWorkspace(projectDir, workspace);
 
-    try {
-      // Config
-      const config = loadConfig({ projectDir });
+      const config = loadConfig({ projectDir: wsDir });
       console.log('=== Resolved Config ===');
-      console.log(`Context:        ${config.contextMode}`);
-      console.log(`Timeout:        ${config.timeoutMinutes}m`);
-      console.log(`Max iterations: ${config.maxIterations ?? 'unlimited'}`);
-      console.log(`Max cost:       ${config.maxCostUsd ? '$' + config.maxCostUsd : 'unlimited'}`);
+      console.log(kv('Workspace', workspace));
+      console.log(kv('Agent', config.agentCmd ?? 'claude-code (default)'));
+      if (config.agentModel) {
+        console.log(kv('Model', config.agentModel));
+      }
+      console.log(kv('Loop mode', config.loopMode));
+      console.log(kv('Context', config.contextMode));
+      console.log(kv('Timeout', `${config.timeoutMinutes}m per iteration`));
+      console.log(kv('Max iterations', config.maxIterations ?? 'unlimited'));
+      console.log(kv('Max rounds', config.maxRounds ?? 'unlimited'));
+      console.log(kv('Max cost', config.maxCostUsd ? '$' + config.maxCostUsd : 'unlimited'));
+      if (config.warnCostUsd) {
+        console.log(kv('Warn cost', '$' + config.warnCostUsd));
+      }
+      console.log(kv('No-progress CB', `${config.cbNoProgressThreshold} iterations`));
+      console.log(kv('Same-error CB', `${config.cbSameErrorThreshold} iterations`));
+      console.log(kv('Story failures', `${config.storyMaxConsecutiveFailures} max consecutive`));
       console.log('');
 
-      // PRD
-      const prd = loadPrd(join(ralphDir, 'prd.json'));
+      const prd = loadPrd(join(wsDir, 'prd.json'));
       const active = prd.stories.filter(s => s.status === 'active');
       const passing = active.filter(s => s.passes);
       const failing = active.filter(s => !s.passes);
       console.log('=== PRD ===');
-      console.log(`Project:        ${prd.projectName}`);
-      console.log(`Total stories:  ${prd.stories.length}`);
-      console.log(`Active:         ${active.length}`);
-      console.log(`Passing:        ${passing.length}`);
-      console.log(`Failing:        ${failing.length}`);
+      console.log(kv('Project', prd.projectName));
+      console.log(kv('Total stories', prd.stories.length));
+      console.log(kv('Active', active.length));
+      console.log(kv('Passing', passing.length));
+      console.log(kv('Failing', failing.length));
       if (failing.length > 0) {
-        console.log(`Next story:     [${failing[0].id}] ${failing[0].title}`);
+        console.log(kv('Next story', `[${failing[0].id}] ${failing[0].title}`));
       }
       console.log('');
 
-      // Quality gates
       const gates = Object.entries(prd.qualityGates).filter(([_, v]) => v);
       console.log('=== Quality Gates ===');
       if (gates.length === 0) {
-        console.log('None configured.');
+        console.log('None configured. Add typecheck/lint/test to prd.json qualityGates.');
       } else {
         for (const [name, cmd] of gates) {
-          console.log(`${name}: ${cmd}`);
+          console.log(kv(name, String(cmd)));
         }
       }
       console.log('');
 
       console.log('Dry run complete. No agent was invoked.');
-    } catch (e) {
-      console.error(`Dry run failed: ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    }
-  });
+    },
+    `Check ${'.ralphx'}/${workspace}/${'prd.json'} and ${'.ralphx'}/${workspace}/${'.ralphxrc'} for syntax errors.`,
+  )());
 
 program
   .command('import')
-  .description('Import requirements from a markdown file into prd.json')
-  .argument('<file>', 'Path to markdown requirements file')
-  .option('--project <name>', 'Project name', 'my-project')
-  .action((file: string, opts: { project: string }) => {
+  .description('Parse a markdown file into prd.json stories for a workspace.')
+  .argument('<file>', 'Path to markdown file with ## headings for each story')
+  .argument('<workspace>', 'Target workspace name')
+  .option('--project <name>', 'Project name in prd.json (defaults to workspace name)')
+  .addHelpText('after', `
+Examples:
+  $ ralphx import requirements.md audit
+  $ ralphx import stories.md dev --project my-app
+
+Expected markdown format:
+  ## Story Title
+  Description paragraph.
+  - Acceptance criterion 1
+  - Acceptance criterion 2
+
+  ## Another Story
+  ...
+
+Parsing rules:
+  - Each ## heading becomes a story (auto-generated IDs: story-1, story-2, ...)
+  - Bullet points (- or *) under a heading become acceptance criteria
+  - Non-bullet text under a heading becomes the story description
+  - # H1 headings are ignored (only ## H2 headings create stories)
+  - Stories default to status "active" with priority matching their order`)
+  .action((file: string, workspace: string, opts: { project?: string }) => {
     const projectDir = resolveProjectDir();
-    const ralphDir = getRalphDir(projectDir);
+    const wsDir = getWorkspaceDir(projectDir, workspace);
 
     if (!existsSync(file)) {
       console.error(`File not found: ${file}`);
+      console.error('Provide a path to a markdown file with ## headings for each story.');
       process.exit(1);
     }
 
-    try {
-      const markdown = readFileSync(file, 'utf-8');
-      const prd = parseRequirements(markdown, opts.project);
+    const wsExists = existsSync(join(wsDir, 'prd.json'));
 
-      mkdirSync(ralphDir, { recursive: true });
-      const prdPath = join(ralphDir, 'prd.json');
-      writeFileSync(prdPath, JSON.stringify(prd, null, 2));
+    return cliAction(
+      'Import failed',
+      () => {
+        const markdown = readFileSync(file, 'utf-8');
+        const prd = parseRequirements(markdown, opts.project ?? workspace);
 
-      console.log(`Imported ${prd.stories.length} stories into ${prdPath}`);
-    } catch (e) {
-      console.error(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    }
+        if (prd.stories.length === 0) {
+          console.error('No stories found. Ensure the file has ## headings (e.g., "## Story Title").');
+          process.exit(1);
+        }
+
+        mkdirSync(wsDir, { recursive: true });
+        const prdPath = join(wsDir, 'prd.json');
+        writeFileSync(prdPath, JSON.stringify(prd, null, 2));
+
+        console.log(`Imported ${prd.stories.length} ${prd.stories.length === 1 ? 'story' : 'stories'} into ${'.ralphx'}/${workspace}/${'prd.json'}`);
+        if (!wsExists) {
+          console.log(`Tip: Run \`ralphx init ${workspace}\` to create PROMPT.md, AGENT.md, and .ralphxrc.`);
+        }
+      },
+      'Ensure the file is valid markdown with ## headings for each story.',
+    )();
   });
 
 // --- Workflow commands ---
 
-const workflowCmd = program.command('workflow').description('Manage reusable workflow templates');
+const workflowCmd = program
+  .command('workflow')
+  .description('Save, apply, and list reusable workflow templates.')
+  .addHelpText('after', `
+Workflows save a workspace's config files (PROMPT.md, AGENT.md, .ralphxrc, prd.json)
+as a reusable template stored in ~/.ralphx/workflows/.
+
+Examples:
+  $ ralphx workflow save my-audit audit     Save audit workspace as template
+  $ ralphx workflow use my-audit dev        Apply template to dev workspace
+  $ ralphx workflow list                    List saved templates`);
 
 workflowCmd
   .command('save')
-  .description('Save current .ralph/ config as a named workflow')
-  .argument('<name>', 'Workflow name')
-  .action((name: string) => {
-    try {
-      saveWorkflow(name, resolveProjectDir());
-      console.log(`Workflow "${name}" saved.`);
-    } catch (e) {
-      console.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    }
-  });
+  .description('Save a workspace config as a named template.')
+  .argument('<name>', 'Template name')
+  .argument('<workspace>', 'Source workspace to save from')
+  .addHelpText('after', `
+Examples:
+  $ ralphx workflow save my-audit audit     Save audit config as "my-audit" template
+  $ ralphx workflow save standard dev       Save dev config as "standard" template
+
+Saves PROMPT.md, AGENT.md, .ralphxrc, and prd.json to ~/.ralphx/workflows/<name>/.`)
+  .action((name: string, workspace: string) => cliAction(
+    'Failed to save workflow',
+    () => {
+      const projectDir = resolveProjectDir();
+      const wsDir = requireWorkspace(projectDir, workspace);
+      saveWorkflow(name, wsDir);
+      console.log(`Workflow "${name}" saved from workspace "${workspace}".`);
+    },
+    `Ensure workspace "${workspace}" is initialized with: ralphx init ${workspace}`,
+  )());
 
 workflowCmd
   .command('use')
-  .description('Apply a saved workflow to current project')
-  .argument('<name>', 'Workflow name')
-  .action((name: string) => {
-    try {
-      useWorkflow(name, resolveProjectDir());
-      console.log(`Workflow "${name}" applied to .ralph/`);
-    } catch (e) {
-      console.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    }
-  });
+  .description('Apply a saved template to a workspace.')
+  .argument('<name>', 'Template name')
+  .argument('<workspace>', 'Target workspace to apply to')
+  .addHelpText('after', `
+Examples:
+  $ ralphx workflow use my-audit staging    Apply "my-audit" template to staging workspace
+  $ ralphx workflow use standard new-ws     Apply "standard" template to new-ws workspace
+
+Creates the workspace directory if it doesn't exist. Overwrites existing config files.`)
+  .action((name: string, workspace: string) => cliAction(
+    'Failed to apply workflow',
+    () => {
+      const projectDir = resolveProjectDir();
+      const wsDir = getWorkspaceDir(projectDir, workspace);
+      mkdirSync(wsDir, { recursive: true });
+      useWorkflow(name, wsDir);
+      console.log(`Workflow "${name}" applied to workspace "${workspace}".`);
+    },
+    'List available workflows with: ralphx workflow list',
+  )());
 
 workflowCmd
   .command('list')
-  .description('List available workflows')
-  .action(() => {
-    const workflows = listWorkflows();
-    if (workflows.length === 0) {
-      console.log('No saved workflows. Use `ralph workflow save <name>` to create one.');
-      return;
-    }
-    for (const w of workflows) {
-      console.log(`  ${w.name} (${w.files.join(', ')}) — ${w.createdAt.split('T')[0]}`);
-    }
-  });
+  .description('List all saved workflow templates.')
+  .addHelpText('after', `
+Examples:
+  $ ralphx workflow list                    Show all saved templates
+
+Templates are stored in ~/.ralphx/workflows/.`)
+  .action(() => cliAction(
+    'Failed to list workflows',
+    () => {
+      const workflows = listWorkflows();
+      if (workflows.length === 0) {
+        console.log('No saved workflows.');
+        console.log('Save one with: ralphx workflow save <name> <workspace>');
+        return;
+      }
+      console.log(kv('Workflows', `${workflows.length} saved`));
+      console.log('');
+      for (const w of workflows) {
+        console.log(`  ${w.name.padEnd(20)}${w.files.join(', ').padEnd(40)}${w.createdAt.split('T')[0]}`);
+      }
+    },
+    'Ensure ~/.ralphx/workflows/ is readable.',
+  )());
 
 program.parse();

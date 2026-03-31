@@ -21,7 +21,6 @@ export interface AgentRunOptions {
   allowedTools?: string[];
   sessionId?: string;
   timeoutMs?: number;
-  outputFormat?: 'json' | 'text';
 }
 
 export interface IAgent {
@@ -30,6 +29,5 @@ export interface IAgent {
   readonly supportsStructuredOutput: boolean;
 
   run(options: AgentRunOptions): Promise<AgentRunResult>;
-  parseOutput(raw: string): AgentRunResult;
   validateInstallation(): Promise<{ ok: boolean; version?: string; error?: string }>;
 }

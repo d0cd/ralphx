@@ -1,20 +1,21 @@
 import { join } from 'node:path';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { StateWriter } from './state-writer.js';
 import { CircuitBreaker } from './circuit-breaker.js';
-import { Validator } from './validator.js';
+import { Validator, sanitizeOutput } from './validator.js';
 import { SignalHandler } from './signal-handler.js';
 import { readHint } from './hint.js';
 import { log, setLogLevel } from './logger.js';
 import { appendProgress, readProgress } from './progress-writer.js';
 import { buildFreshPrompt, buildContinuePrompt } from '../context/strategies.js';
-import { loadPrd, getFailingStories, allStoriesPass, updateStoryPasses, resetFailingStories } from '../prd/tracker.js';
+import { loadPrd, getFailingStories, getPassingStoryIds, allStoriesPass, updateStoryPasses, resetFailingStories } from '../prd/tracker.js';
 import { estimateCost } from '../cost/pricing.js';
 import type { IAgent } from '../types/agent.js';
 import type { RalphConfig } from '../types/config.js';
 import type { RunState, ExitReason } from '../types/state.js';
+import type { Story } from '../types/prd.js';
 
 interface LoopResult {
   state: RunState;
@@ -24,25 +25,32 @@ interface LoopResult {
 interface RalphLoopOptions {
   config: RalphConfig;
   agent: IAgent;
+  /** Workspace directory (contains prd.json, AGENT.md, runs/, etc.) */
   projectDir: string;
+  /** Git repo root where quality gates and git commands run. Defaults to projectDir. */
+  projectRoot?: string;
   runId?: string;
+  previousState?: RunState;
 }
 
 const DEFAULT_PROTECTED_PATHS = [
-  '.ralph/AGENT.md',
-  '.ralph/prd.json',
-  '.ralph/runs/**',
+  '.ralphx/**',
   '.env',
   '.env.*',
-  '**/*.lock',
 ];
 
 const VALIDATION_FAILURE_THRESHOLD = 5;
+
+/** Expected git errors that don't indicate a real problem (no repo, or empty repo). */
+function isExpectedGitError(msg: string): boolean {
+  return msg.includes('not a git repository') || msg.includes('does not have any commits');
+}
 
 export class RalphLoop {
   private config: RalphConfig;
   private agent: IAgent;
   private projectDir: string;
+  private projectRoot: string;
   private runId: string;
   private stateWriter: StateWriter;
   private cb: CircuitBreaker;
@@ -50,13 +58,20 @@ export class RalphLoop {
   private signalHandler: SignalHandler;
   private stopRequested = false;
   private consecutiveValidationFailures = 0;
+  private consecutiveCleanRounds = 0;
   private prdPath: string;
+  private protectedPaths: string[];
+  private previousState?: RunState;
+  private cachedWorkspacePrefix?: string;
+  private cachedAgentMd?: string | null;
+  private lastSessionId?: string;
 
   constructor(options: RalphLoopOptions) {
     this.config = options.config;
     this.agent = options.agent;
     this.projectDir = options.projectDir;
-    this.prdPath = join(options.projectDir, '.ralph', 'prd.json');
+    this.projectRoot = options.projectRoot ?? options.projectDir;
+    this.prdPath = join(options.projectDir, 'prd.json');
 
     setLogLevel(options.config.verbose ? 'debug' : 'info');
 
@@ -76,15 +91,16 @@ export class RalphLoop {
       cooldownMinutes: options.config.cbCooldownMinutes,
     });
 
-    const protectedPaths = options.config.protectedPaths ?? DEFAULT_PROTECTED_PATHS;
+    this.protectedPaths = options.config.protectedPaths ?? DEFAULT_PROTECTED_PATHS;
     const prd = loadPrd(this.prdPath);
     this.validator = new Validator({
-      protectedPaths,
+      protectedPaths: this.protectedPaths,
       qualityGates: prd.qualityGates,
-      projectDir: options.projectDir,
+      projectRoot: this.projectRoot,
     });
 
     this.signalHandler = new SignalHandler();
+    this.previousState = options.previousState;
   }
 
   requestStop(): void {
@@ -105,14 +121,26 @@ export class RalphLoop {
       log.warn('Force exit requested');
       process.exit(1);
     });
+    this.signalHandler.onCrash(() => {
+      try { this.stateWriter.setStatus('crashed'); } catch { /* best effort */ }
+    });
     this.signalHandler.register();
 
     await this.stateWriter.initialize();
-    log.info(`Run ${this.runId} started (context: ${this.config.contextMode})`);
+    if (this.previousState) {
+      await this.stateWriter.restoreFrom(this.previousState);
+      // Restore session ID for continue-mode session continuity on resume
+      if (this.previousState.sessionId) {
+        this.lastSessionId = this.previousState.sessionId;
+      }
+      log.info(`Run ${this.runId} resumed from iteration ${this.previousState.iteration} (context: ${this.config.contextMode})`);
+    } else {
+      log.info(`Run ${this.runId} started (context: ${this.config.contextMode})`);
+    }
 
     let exitReason: ExitReason = 'converged';
-    let iteration = 0;
-    let round = 0;
+    let iteration = this.previousState ? this.previousState.iteration : 0;
+    let round = this.previousState ? this.previousState.round : 0;
     try {
       // Outer loop: rounds.
       // Each round runs the agent on ALL active stories.
@@ -137,7 +165,7 @@ export class RalphLoop {
           break;
         }
         if (this.config.maxRounds && round > this.config.maxRounds) {
-          exitReason = 'max_iterations';
+          exitReason = 'max_rounds';
           log.info(`Max rounds (${this.config.maxRounds}) reached`);
           break;
         }
@@ -160,7 +188,7 @@ export class RalphLoop {
 
         // Select stories for this round based on loop mode
         const isConvergent = this.config.loopMode === 'convergent';
-        const maxFailures = this.config.storyMaxConsecutiveFailures ?? 3;
+        const maxFailures = this.config.storyMaxConsecutiveFailures;
 
         let stories: typeof prd.stories;
         if (isConvergent) {
@@ -236,6 +264,41 @@ export class RalphLoop {
         }
         if (exitReason === 'max_iterations' || exitReason === 'budget_exceeded' || exitReason === 'circuit_breaker_terminal' || exitReason === 'validation_failed_repeatedly') break;
 
+        // Run quality gates once at end of round (not per-story)
+        const gateResult = await this.validator.runQualityGates();
+        await this.stateWriter.recordValidation({
+          passed: gateResult.passed,
+          commandResults: gateResult.commandResults,
+          protectedPathsViolated: [],
+          warnings: [],
+          reasons: gateResult.passed ? [] : [`Quality gates failed: ${gateResult.commandResults.filter(r => !r.passed).map(r => r.name).join(', ')}`],
+        });
+
+        if (!gateResult.passed) {
+          const failedGates = gateResult.commandResults.filter(r => !r.passed);
+          const gateOutput = failedGates.map(r => `${r.name}: ${r.outputSummary ?? 'no output'}`).join('\n');
+          log.warn(`Quality gates failed at end of round ${round}:\n${gateOutput}`);
+          // Mark all passing stories as failing in a single batch write (gates are global)
+          const prdAfterGate = loadPrd(this.prdPath);
+          const passingIds = getPassingStoryIds(prdAfterGate);
+          const gateReason = `Quality gates failed: ${failedGates.map(r => r.name).join(', ')}`;
+          resetFailingStories(this.prdPath, passingIds, gateReason);
+          this.consecutiveValidationFailures++;
+          this.cb.recordIteration({ madeProgress: false, error: `Gates failed: ${failedGates.map(r => r.name).join(', ')}` });
+
+          if (this.consecutiveValidationFailures >= VALIDATION_FAILURE_THRESHOLD) {
+            exitReason = 'validation_failed_repeatedly';
+            log.warn(`Quality gates failed ${this.consecutiveValidationFailures} consecutive rounds — stopping`);
+            break;
+          }
+          // Gates failed — run another round so the agent can fix the issue
+          this.consecutiveCleanRounds = 0;
+          continue;
+        }
+
+        // Gates passed — reset validation failure counter
+        this.consecutiveValidationFailures = 0;
+
         // Post-round exit check
         const postPrd = loadPrd(this.prdPath);
 
@@ -247,17 +310,25 @@ export class RalphLoop {
             return prev !== s.passes;
           });
 
-          if (!stateChanged && allStoriesPass(postPrd)) {
-            exitReason = 'converged';
-            log.info(`Converged: round ${round} produced zero state changes, all gates pass`);
-            break;
+          const allPass = allStoriesPass(postPrd);
+          if (!stateChanged && allPass) {
+            this.consecutiveCleanRounds++;
+            const threshold = this.config.convergenceThreshold ?? 1;
+            if (this.consecutiveCleanRounds >= threshold) {
+              exitReason = 'converged';
+              log.info(`Converged: ${this.consecutiveCleanRounds} consecutive clean round(s), all gates pass`);
+              break;
+            }
+            log.info(`Clean round ${this.consecutiveCleanRounds}/${threshold} — running another to confirm convergence`);
+            continue;
           }
-          if (!stateChanged && !allStoriesPass(postPrd)) {
+          if (!stateChanged && !allPass) {
             exitReason = 'no_progress';
             log.warn(`Round ${round} produced zero state changes but some stories still fail`);
             break;
           }
-          // State changed: agent made progress (or regressed), need another round to confirm
+          // State changed: agent made progress (or regressed), reset clean round counter
+          this.consecutiveCleanRounds = 0;
           log.info(`Round ${round}: ${roundFixCount} stories passed — running another round to confirm`);
         } else {
           // Backlog mode: done when all stories pass
@@ -275,7 +346,7 @@ export class RalphLoop {
         }
       }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = (err instanceof Error ? err.message : String(err));
       log.error(`Loop crashed: ${errorMsg}`);
       try { await this.stateWriter.setStatus('crashed'); } catch { /* best effort */ }
       throw new Error(`Loop crashed: ${errorMsg}`);
@@ -284,8 +355,19 @@ export class RalphLoop {
     }
 
     this.stateWriter.setExitReason(exitReason);
-    if (exitReason !== 'interrupted') {
+    if (exitReason === 'interrupted') {
+      // Status was already set to 'interrupted' inside the loop,
+      // but exitReason was set after that flush — persist it now.
+      await this.stateWriter.flush();
+    } else {
       await this.stateWriter.setStatus('complete');
+    }
+
+    // Report any protected path violations at exit
+    const violations = this.validator.checkProtectedPaths(this.getChangedFiles());
+    if (violations.protectedPathsViolated.length > 0) {
+      log.warn(`Protected paths were modified during this run: ${violations.protectedPathsViolated.join(', ')}`);
+      log.warn('Review these changes before committing.');
     }
 
     const finalState = this.stateWriter.getState();
@@ -295,11 +377,11 @@ export class RalphLoop {
   }
 
   /** Execute a single story: run agent, validate, update passes. Returns true if story passes. */
-  private async executeStory(story: import('../types/prd.js').Story, iteration: number, round: number): Promise<boolean> {
+  private async executeStory(story: Story, iteration: number, round: number): Promise<boolean> {
     log.info(`Iteration ${iteration} (round ${round}): [${story.id}] ${story.title}`);
     this.stateWriter.setCurrentStory(story.id, story.title);
 
-    const runDir = join(this.projectDir, '.ralph', 'runs', this.runId);
+    const runDir = join(this.projectDir, 'runs', this.runId);
     const hint = readHint(runDir);
     if (hint) log.info(`Hint consumed for [${story.id}]`);
 
@@ -307,17 +389,27 @@ export class RalphLoop {
     const progressMd = readProgress(this.projectDir);
     const state = this.stateWriter.getState();
     const lastValidation = state.lastValidationResult;
-    const validationSummary = lastValidation && !lastValidation.passed
-      ? lastValidation.reasons.join('; ') : undefined;
+    let validationSummary: string | undefined;
+    if (lastValidation && !lastValidation.passed) {
+      const parts = [...lastValidation.reasons];
+      // Include full gate output so the agent can see what failed
+      for (const cr of lastValidation.commandResults) {
+        if (!cr.passed && cr.outputSummary) {
+          parts.push(`\n--- ${cr.name} output ---\n${cr.outputSummary}`);
+        }
+      }
+      validationSummary = parts.join('\n');
+    }
 
     let prompt: string;
     if (this.config.contextMode === 'fresh') {
       prompt = buildFreshPrompt({
         story, agentMd: agentMd ?? undefined,
         validationSummary, progressMd: progressMd ?? undefined,
+        protectedPaths: this.protectedPaths,
       });
     } else {
-      prompt = buildContinuePrompt({ story, hint: hint ?? undefined });
+      prompt = buildContinuePrompt({ story, hint: hint ?? undefined, protectedPaths: this.protectedPaths });
     }
 
     const startedAt = new Date().toISOString();
@@ -329,12 +421,12 @@ export class RalphLoop {
         prompt,
         timeoutMs: this.config.timeoutMinutes * 60 * 1000,
         allowedTools: this.config.allowedTools,
+        sessionId: this.config.contextMode === 'continue' ? this.lastSessionId : undefined,
       });
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = (err instanceof Error ? err.message : String(err));
       log.error(`Agent error on [${story.id}]: ${errorMsg}`);
       this.stateWriter.setLastError(errorMsg);
-      this.consecutiveValidationFailures++;
       await this.stateWriter.recordIteration({
         iteration, round, storyId: story.id, startedAt,
         endedAt: new Date().toISOString(), durationMs: Date.now() - startMs,
@@ -348,6 +440,13 @@ export class RalphLoop {
       return false;
     }
 
+    // Track session ID for continue-mode session continuity.
+    // Persist in state so it survives pause/resume cycles.
+    if (result.sessionId) {
+      this.lastSessionId = result.sessionId;
+      this.stateWriter.setSessionId(result.sessionId);
+    }
+
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - startMs;
     const iterationCost = result.usage
@@ -355,22 +454,29 @@ export class RalphLoop {
 
     log.debug(`Iteration ${iteration}: ${durationMs}ms, ~$${iterationCost.toFixed(4)}`);
 
-    // Validate — the loop decides pass/fail, not the agent
+    // Per-story validation: check protected paths and diff sanity (cheap checks).
+    // Quality gates run once at end of round, not per-story.
     const changedFiles = this.getChangedFiles();
     const diffSize = this.getDiffSize();
-    const validation = await this.validator.validate({ changedFiles, diffSize });
-    await this.stateWriter.recordValidation(validation);
+    const pathCheck = this.validator.checkProtectedPaths(changedFiles);
+    const sanity = this.validator.checkDiffSanity(changedFiles, diffSize);
 
-    const passed = validation.passed && result.exitCode === 0;
-    this.stateWriter.setLastAgentOutputSummary(result.output.slice(0, 200));
+    if (pathCheck.protectedPathsViolated.length > 0) {
+      sanity.warnings.push(`Protected paths modified: ${pathCheck.protectedPathsViolated.join(', ')}`);
+    }
+    if (pathCheck.outsideProject.length > 0) {
+      sanity.warnings.push(`Files outside project: ${pathCheck.outsideProject.join(', ')}`);
+    }
+
+    // Story passes based on agent exit code only (gates checked at round end)
+    const passed = result.exitCode === 0;
+    const outputSummary = sanitizeOutput(result.output);
+    this.stateWriter.setLastAgentOutputSummary(outputSummary);
 
     if (passed) {
-      this.consecutiveValidationFailures = 0;
       this.stateWriter.setLastError(undefined);
     } else {
-      this.consecutiveValidationFailures++;
-      const errorDetail = validation.reasons.join('; ');
-      this.stateWriter.setLastError(errorDetail);
+      this.stateWriter.setLastError(outputSummary);
     }
 
     await this.stateWriter.recordIteration({
@@ -381,29 +487,32 @@ export class RalphLoop {
       cacheWriteTokens: result.usage?.cacheWriteTokens ?? 0,
       estimatedCostUsd: iterationCost,
       validationPassed: passed,
-      summary: result.output.slice(0, 200),
+      summary: outputSummary,
     });
 
     updateStoryPasses(this.prdPath, story.id, passed,
-      passed ? undefined : validation.reasons.join('; '));
+      passed ? undefined : outputSummary);
 
-    if (!validation.passed) {
-      log.warn(`Validation failed for [${story.id}]: ${validation.reasons.join('; ')}`);
+    if (!passed) {
+      log.warn(`Story [${story.id}] failed (agent exit code ${result.exitCode})`);
+    }
+
+    if (sanity.warnings.length > 0) {
+      log.warn(`Warnings for [${story.id}]: ${sanity.warnings.join('; ')}`);
     }
 
     this.cb.recordIteration({
       madeProgress: passed,
-      error: !passed ? result.output.slice(0, 200) : undefined,
+      error: !passed ? outputSummary : undefined,
       costUsd: iterationCost,
-      validationFailed: !validation.passed,
     });
 
     if (passed) log.info(`Story [${story.id}] passes`);
 
     appendProgress(this.projectDir, {
       iteration, round, storyId: story.id, storyTitle: story.title,
-      passed, summary: result.output.slice(0, 200),
-      gateResults: validation.commandResults.map(cr => ({ name: cr.name, passed: cr.passed })),
+      passed, summary: outputSummary,
+      gateResults: [],  // Gates run at end of round, not per-story
       timestamp: endedAt,
     });
 
@@ -420,9 +529,7 @@ export class RalphLoop {
 
     if (!validation.passed) {
       const prd = loadPrd(this.prdPath);
-      const passingIds = prd.stories
-        .filter(s => s.status === 'active' && s.passes)
-        .map(s => s.id);
+      const passingIds = getPassingStoryIds(prd);
       if (passingIds.length > 0) {
         log.warn(`Quality gates failed at round start — re-evaluating ${passingIds.length} passing stories`);
         resetFailingStories(this.prdPath, passingIds);
@@ -431,25 +538,72 @@ export class RalphLoop {
   }
 
   private loadAgentMd(): string | null {
-    const p = join(this.projectDir, '.ralph', 'AGENT.md');
-    if (!existsSync(p)) return null;
-    try { return readFileSync(p, 'utf-8'); } catch { return null; /* best-effort: missing AGENT.md is non-fatal */ }
+    if (this.cachedAgentMd !== undefined) return this.cachedAgentMd;
+    const p = join(this.projectDir, 'AGENT.md');
+    try {
+      this.cachedAgentMd = readFileSync(p, 'utf-8');
+    } catch {
+      this.cachedAgentMd = null; // best-effort: missing AGENT.md is non-fatal
+    }
+    return this.cachedAgentMd;
   }
 
   private getChangedFiles(): string[] {
     try {
+      const wsPrefix = this.getWorkspacePrefix();
       return execSync('git diff --name-only HEAD', {
-        cwd: this.projectDir, encoding: 'utf-8', timeout: 10000,
+        cwd: this.projectRoot, encoding: 'utf-8', timeout: 10000,
       }).trim().split('\n').filter(Boolean)
-        .filter(f => !f.startsWith('.ralph/')); // Exclude loop-managed files
-    } catch { return []; /* best-effort: git may not be available or no commits yet */ }
+        .filter(f => !f.startsWith(wsPrefix)); // Exclude workspace-managed files
+    } catch (err) {
+      // Distinguish expected errors (no git, no commits) from transient failures
+      // that silently disable file safety checks.
+      const msg = (err instanceof Error ? err.message : String(err));
+      if (!isExpectedGitError(msg)) {
+        log.warn(`git diff failed — file safety checks skipped this iteration: ${msg}`);
+      }
+      return [];
+    }
+  }
+
+  /**
+   * Compute the workspace directory's path relative to the git root (cached).
+   * Used to filter workspace-managed files (e.g., .ralphx/audit/prd.json)
+   * from the changed files list so they don't trigger diff sanity warnings
+   * or inflate the changed file count.
+   */
+  private getWorkspacePrefix(): string {
+    if (this.cachedWorkspacePrefix !== undefined) return this.cachedWorkspacePrefix;
+    try {
+      // Compute the workspace dir path relative to the git root.
+      // projectDir is the workspace dir (e.g., /repo/.ralphx/audit/)
+      // projectRoot is the git repo root (e.g., /repo/)
+      const gitRoot = execSync('git rev-parse --show-toplevel', {
+        cwd: this.projectRoot, encoding: 'utf-8', timeout: 5000,
+      }).trim();
+      const relative = this.projectDir.startsWith(gitRoot + '/')
+        ? this.projectDir.slice(gitRoot.length + 1)
+        : '.ralphx/';
+      // Ensure trailing slash so startsWith matches only children
+      this.cachedWorkspacePrefix = relative.endsWith('/') ? relative : relative + '/';
+    } catch {
+      // Fallback: filter by the workspace directory name (covers most cases)
+      this.cachedWorkspacePrefix = '.ralphx/';
+    }
+    return this.cachedWorkspacePrefix;
   }
 
   private getDiffSize(): number {
     try {
       return execSync('git diff --stat HEAD', {
-        cwd: this.projectDir, encoding: 'utf-8', timeout: 10000,
+        cwd: this.projectRoot, encoding: 'utf-8', timeout: 10000,
       }).split('\n').length;
-    } catch { return 0; /* best-effort: git may not be available or no commits yet */ }
+    } catch (err) {
+      const msg = (err instanceof Error ? err.message : String(err));
+      if (!isExpectedGitError(msg)) {
+        log.warn(`git diff --stat failed — diff sanity check skipped: ${msg}`);
+      }
+      return 0;
+    }
   }
 }

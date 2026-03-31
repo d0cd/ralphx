@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** z.number() that rejects NaN — prevents silent limit bypass from bad CLI input. */
+const safeNumber = () => z.number().refine(n => !Number.isNaN(n), { message: 'Expected a valid number, received NaN' });
+
 export const RalphConfigSchema = z.object({
   agentCmd: z.string().optional(),
   agentModel: z.string().optional(),
@@ -7,20 +10,21 @@ export const RalphConfigSchema = z.object({
   contextMode: z.enum(['continue', 'fresh']).default('continue'),
 
   loopMode: z.enum(['backlog', 'convergent']).default('convergent'),
-  timeoutMinutes: z.number().min(1).max(120).default(20),
-  maxRounds: z.number().optional(),
-  maxIterations: z.number().optional(),
+  timeoutMinutes: safeNumber().min(1).max(120).default(20),
+  maxRounds: safeNumber().optional(),
+  maxIterations: safeNumber().optional(),
 
-  maxCostUsd: z.number().optional(),
-  warnCostUsd: z.number().optional(),
-  maxTokensSession: z.number().optional(),
-  costPerIterationThreshold: z.number().optional(),
+  maxCostUsd: safeNumber().optional(),
+  warnCostUsd: safeNumber().optional(),
+  maxTokensSession: safeNumber().optional(),
+  costPerIterationThreshold: safeNumber().optional(),
 
-  cbNoProgressThreshold: z.number().default(3),
-  cbSameErrorThreshold: z.number().default(4),
-  cbCooldownMinutes: z.number().default(15),
+  cbNoProgressThreshold: safeNumber().default(3),
+  cbSameErrorThreshold: safeNumber().default(4),
+  cbCooldownMinutes: safeNumber().default(15),
 
-  storyMaxConsecutiveFailures: z.number().default(3),
+  storyMaxConsecutiveFailures: safeNumber().default(3),
+  convergenceThreshold: safeNumber().min(1).default(1),
 
   protectedPaths: z.array(z.string()).optional(),
   allowedTools: z.array(z.string()).optional(),

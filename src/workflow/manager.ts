@@ -1,34 +1,35 @@
-import { existsSync, mkdirSync, readdirSync, copyFileSync, readFileSync, statSync, type Dirent } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, copyFileSync, statSync, type Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { validatePathSegment } from '../cli/helpers.js';
 
-const WORKFLOW_FILES = ['PROMPT.md', 'AGENT.md', '.ralphrc', 'prd.json'];
+const WORKFLOW_FILES = ['PROMPT.md', 'AGENT.md', '.ralphxrc', 'prd.json'];
 
 function getWorkflowsDir(): string {
-  return join(homedir(), '.ralph', 'workflows');
+  return join(homedir(), '.ralphx', 'workflows');
 }
 
-export function saveWorkflow(name: string, projectDir: string): void {
-  const ralphDir = join(projectDir, '.ralph');
-  if (!existsSync(ralphDir)) {
-    throw new Error('No .ralph/ directory found. Run `ralph init` first.');
+export function saveWorkflow(name: string, wsDir: string): void {
+  validatePathSegment(name, 'Workflow name');
+  if (!existsSync(wsDir)) {
+    throw new Error('Workspace directory not found. Run `ralphx init <workspace>` first.');
   }
 
   const destDir = join(getWorkflowsDir(), name);
   try {
     mkdirSync(destDir, { recursive: true });
   } catch (e) {
-    throw new Error(`Failed to create workflow directory ${destDir}: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`Failed to create workflow directory ${destDir}: ${(e instanceof Error ? e.message : String(e))}`);
   }
 
   let copied = 0;
   for (const file of WORKFLOW_FILES) {
-    const src = join(ralphDir, file);
+    const src = join(wsDir, file);
     if (existsSync(src)) {
       try {
         copyFileSync(src, join(destDir, file));
       } catch (e) {
-        throw new Error(`Failed to copy workflow file ${src} to ${destDir}: ${e instanceof Error ? e.message : String(e)}`);
+        throw new Error(`Failed to copy workflow file ${src} to ${destDir}: ${(e instanceof Error ? e.message : String(e))}`);
       }
       copied++;
     }
@@ -39,32 +40,32 @@ export function saveWorkflow(name: string, projectDir: string): void {
   }
 }
 
-export function useWorkflow(name: string, projectDir: string): void {
+export function useWorkflow(name: string, wsDir: string): void {
+  validatePathSegment(name, 'Workflow name');
   const srcDir = join(getWorkflowsDir(), name);
   if (!existsSync(srcDir)) {
-    throw new Error(`Workflow "${name}" not found. Use \`ralph workflow list\` to see available workflows.`);
+    throw new Error(`Workflow "${name}" not found. Use \`ralphx workflow list\` to see available workflows.`);
   }
 
-  const ralphDir = join(projectDir, '.ralph');
   try {
-    mkdirSync(join(ralphDir, 'runs'), { recursive: true });
+    mkdirSync(join(wsDir, 'runs'), { recursive: true });
   } catch (e) {
-    throw new Error(`Failed to create directory ${join(ralphDir, 'runs')}: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`Failed to create directory ${join(wsDir, 'runs')}: ${(e instanceof Error ? e.message : String(e))}`);
   }
 
   let entries: Dirent[];
   try {
     entries = readdirSync(srcDir, { withFileTypes: true });
   } catch (e) {
-    throw new Error(`Failed to read workflow directory ${srcDir}: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`Failed to read workflow directory ${srcDir}: ${(e instanceof Error ? e.message : String(e))}`);
   }
 
   const files = entries.filter(e => e.isFile()).map(e => e.name);
   for (const file of files) {
     try {
-      copyFileSync(join(srcDir, file), join(ralphDir, file));
+      copyFileSync(join(srcDir, file), join(wsDir, file));
     } catch (e) {
-      throw new Error(`Failed to copy workflow file ${file} to ${ralphDir}: ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`Failed to copy workflow file ${file} to ${wsDir}: ${(e instanceof Error ? e.message : String(e))}`);
     }
   }
 }
@@ -83,7 +84,7 @@ export function listWorkflows(): WorkflowInfo[] {
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch (e) {
-    throw new Error(`Failed to read workflows directory ${dir}: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`Failed to read workflows directory ${dir}: ${(e instanceof Error ? e.message : String(e))}`);
   }
 
   return entries
@@ -108,20 +109,4 @@ export function listWorkflows(): WorkflowInfo[] {
       }
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-}
-
-export function getWorkflowDetail(name: string): { prdSummary?: string } | null {
-  const dir = join(getWorkflowsDir(), name);
-  if (!existsSync(dir)) return null;
-
-  const prdPath = join(dir, 'prd.json');
-  if (!existsSync(prdPath)) return {};
-
-  try {
-    const prd = JSON.parse(readFileSync(prdPath, 'utf-8'));
-    const storyCount = prd.stories?.length ?? 0;
-    return { prdSummary: `${prd.projectName ?? 'unnamed'}: ${storyCount} stories` };
-  } catch {
-    return {}; // best-effort: corrupted prd.json in workflow is non-fatal
-  }
 }

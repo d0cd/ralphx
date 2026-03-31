@@ -77,5 +77,25 @@ describe('Cost Pricing', () => {
         cacheWriteTokens: 0,
       })).toBe(0);
     });
+
+    it('returns 0 for null usage', () => {
+      expect(estimateCost(null)).toBe(0);
+    });
+
+    it('returns 0 for undefined usage', () => {
+      expect(estimateCost(undefined)).toBe(0);
+    });
+
+    it('clamps negative token counts to zero', () => {
+      const cost = estimateCost({
+        inputTokens: -1000,
+        outputTokens: 500,
+        cacheReadTokens: -100,
+        cacheWriteTokens: 0,
+      }, 'claude-sonnet-4-6');
+      // Only output tokens contribute: 500 at $15/M = $0.0075
+      expect(cost).toBeCloseTo(0.0075, 6);
+      expect(cost).toBeGreaterThanOrEqual(0);
+    });
   });
 });

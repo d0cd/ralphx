@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync, existsSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 interface ProgressEntry {
@@ -13,7 +13,7 @@ interface ProgressEntry {
 }
 
 export function appendProgress(projectDir: string, entry: ProgressEntry): void {
-  const progressPath = join(projectDir, '.ralph', 'progress.md');
+  const progressPath = join(projectDir, 'progress.md');
 
   const gates = entry.gateResults.length > 0
     ? entry.gateResults.map(g => `${g.name}: ${g.passed ? 'pass' : 'FAIL'}`).join(', ')
@@ -36,12 +36,11 @@ export function appendProgress(projectDir: string, entry: ProgressEntry): void {
 }
 
 export function readProgress(projectDir: string): string | null {
-  const progressPath = join(projectDir, '.ralph', 'progress.md');
-  if (!existsSync(progressPath)) return null;
+  const progressPath = join(projectDir, 'progress.md');
   try {
     const content = readFileSync(progressPath, 'utf-8').trim();
     return content.length > 0 ? content : null;
   } catch {
-    return null; // best-effort: progress file may be corrupted or removed mid-read
+    return null;
   }
 }

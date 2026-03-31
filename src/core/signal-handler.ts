@@ -1,32 +1,32 @@
 export class SignalHandler {
-  private stopRequested = false;
   private signalCount = 0;
   private stopCallback?: () => void;
   private forceExitCallback?: () => void;
   private crashCallback?: () => void;
-  private boundHandler: (signal: string) => void;
+  private boundSigintHandler: () => void;
+  private boundSigtermHandler: () => void;
   private boundUncaughtHandler: (err: Error) => void;
   private boundUnhandledHandler: (reason: unknown) => void;
 
   constructor() {
-    this.boundHandler = (signal: string) => this.handleSignal(signal);
+    this.boundSigintHandler = () => this.handleSignal('SIGINT');
+    this.boundSigtermHandler = () => this.handleSignal('SIGTERM');
     this.boundUncaughtHandler = (err: Error) => this.handleCrash(err);
     this.boundUnhandledHandler = (reason: unknown) => {
-      const err = reason instanceof Error ? reason : new Error(String(reason));
-      this.handleCrash(err);
+      this.handleCrash(new Error(reason instanceof Error ? reason.message : String(reason)));
     };
   }
 
   register(): void {
-    process.on('SIGINT', () => this.boundHandler('SIGINT'));
-    process.on('SIGTERM', () => this.boundHandler('SIGTERM'));
+    process.on('SIGINT', this.boundSigintHandler);
+    process.on('SIGTERM', this.boundSigtermHandler);
     process.on('uncaughtException', this.boundUncaughtHandler);
     process.on('unhandledRejection', this.boundUnhandledHandler);
   }
 
   unregister(): void {
-    process.removeAllListeners('SIGINT');
-    process.removeAllListeners('SIGTERM');
+    process.removeListener('SIGINT', this.boundSigintHandler);
+    process.removeListener('SIGTERM', this.boundSigtermHandler);
     process.removeListener('uncaughtException', this.boundUncaughtHandler);
     process.removeListener('unhandledRejection', this.boundUnhandledHandler);
   }
@@ -34,7 +34,6 @@ export class SignalHandler {
   handleSignal(_signal: string): void {
     this.signalCount++;
     if (this.signalCount === 1) {
-      this.stopRequested = true;
       this.stopCallback?.();
     } else {
       // Second signal: best-effort crash status, then force exit
@@ -44,12 +43,14 @@ export class SignalHandler {
   }
 
   /** Handle uncaught exceptions / unhandled rejections with best-effort state save */
-  handleCrash(_err: Error): void {
+  handleCrash(err: Error): void {
     try { this.crashCallback?.(); } catch { /* best effort */ }
-  }
-
-  isStopRequested(): boolean {
-    return this.stopRequested;
+    // After best-effort state save, exit with error code.
+    // Without this, uncaughtException handlers swallow the error and the
+    // process hangs (Node.js expects the process to exit after an
+    // uncaughtException handler runs).
+    console.error(`[ralphx] Fatal: ${err.message}`);
+    process.exit(1);
   }
 
   onStop(callback: () => void): void {

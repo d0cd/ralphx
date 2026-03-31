@@ -39,6 +39,7 @@ export type ExitReason =
   | 'converged'
   | 'no_progress'
   | 'max_iterations'
+  | 'max_rounds'
   | 'budget_exceeded'
   | 'circuit_breaker_terminal'
   | 'interrupted'

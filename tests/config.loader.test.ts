@@ -9,8 +9,8 @@ describe('Config Loader', () => {
   let ralphDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `ralph-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    ralphDir = join(tmpDir, '.ralph');
+    tmpDir = join(tmpdir(), `ralphx-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    ralphDir = tmpDir;
     mkdirSync(ralphDir, { recursive: true });
   });
 
@@ -28,9 +28,9 @@ describe('Config Loader', () => {
     expect(config.verbose).toBe(false);
   });
 
-  it('loads valid .ralphrc file', () => {
+  it('loads valid .ralphxrc file', () => {
     writeFileSync(
-      join(ralphDir, '.ralphrc'),
+      join(ralphDir, '.ralphxrc'),
       JSON.stringify({ maxIterations: 10, maxCostUsd: 5.0, verbose: true }),
     );
     const config = loadConfig({ projectDir: tmpDir });
@@ -43,7 +43,7 @@ describe('Config Loader', () => {
 
   it('env var overrides file value', () => {
     writeFileSync(
-      join(ralphDir, '.ralphrc'),
+      join(ralphDir, '.ralphxrc'),
       JSON.stringify({ maxIterations: 10 }),
     );
     const config = loadConfig({
@@ -64,7 +64,7 @@ describe('Config Loader', () => {
 
   it('invalid config throws with clear error', () => {
     writeFileSync(
-      join(ralphDir, '.ralphrc'),
+      join(ralphDir, '.ralphxrc'),
       JSON.stringify({ timeoutMinutes: -5 }),
     );
     expect(() => loadConfig({ projectDir: tmpDir })).toThrow();
@@ -72,7 +72,7 @@ describe('Config Loader', () => {
 
   it('partial config merges correctly with defaults', () => {
     writeFileSync(
-      join(ralphDir, '.ralphrc'),
+      join(ralphDir, '.ralphxrc'),
       JSON.stringify({ verbose: true }),
     );
     const config = loadConfig({ projectDir: tmpDir });
@@ -81,21 +81,42 @@ describe('Config Loader', () => {
     expect(config.contextMode).toBe('continue');
   });
 
-  it('malformed JSON in .ralphrc throws with path in message', () => {
+  it('malformed JSON in .ralphxrc throws with path in message', () => {
     writeFileSync(
-      join(ralphDir, '.ralphrc'),
+      join(ralphDir, '.ralphxrc'),
       '{ not valid json',
     );
-    expect(() => loadConfig({ projectDir: tmpDir })).toThrow('Failed to load config from');
+    expect(() => loadConfig({ projectDir: tmpDir })).toThrow('Failed to read JSON from');
   });
 
   it('unknown keys are stripped', () => {
     writeFileSync(
-      join(ralphDir, '.ralphrc'),
+      join(ralphDir, '.ralphxrc'),
       JSON.stringify({ unknownKey: 'should be dropped', verbose: true }),
     );
     const config = loadConfig({ projectDir: tmpDir });
     expect(config.verbose).toBe(true);
     expect((config as any).unknownKey).toBeUndefined();
+  });
+
+  it('NaN values in flags are rejected by schema validation', () => {
+    expect(() => loadConfig({
+      projectDir: tmpDir,
+      flags: { maxIterations: NaN },
+    })).toThrow();
+  });
+
+  it('NaN values from env vars are rejected at parse time', () => {
+    expect(() => loadConfig({
+      projectDir: tmpDir,
+      env: { RALPH_MAX_ITERATIONS: 'not-a-number' },
+    })).toThrow(/Invalid numeric value/);
+  });
+
+  it('NaN in timeoutMinutes flag is rejected', () => {
+    expect(() => loadConfig({
+      projectDir: tmpDir,
+      flags: { timeoutMinutes: NaN },
+    })).toThrow();
   });
 });

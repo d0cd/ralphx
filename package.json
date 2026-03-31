@@ -8,18 +8,29 @@
     "dist"
   ],
   "bin": {
-    "ralph": "dist/cli/index.js"
+    "ralphx": "dist/cli/index.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/cli/index.js",
+      "types": "./dist/cli/index.d.ts"
+    }
+  },
+  "types": "dist/cli/index.d.ts",
+  "engines": {
+    "node": ">=18.0.0"
   },
   "scripts": {
     "build": "tsc && cp src/cost/models.json dist/cost/models.json && chmod +x dist/cli/index.js",
     "dev": "tsx src/cli/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "npm run test && npm run build"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/d0cd/ralph.git"
+    "url": "git+https://github.com/d0cd/ralphx.git"
   },
   "keywords": [
     "ai",
@@ -29,14 +40,15 @@
     "agent",
     "cli"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": "d0cd",
+  "license": "MIT",
   "bugs": {
-    "url": "https://github.com/d0cd/ralph/issues"
+    "url": "https://github.com/d0cd/ralphx/issues"
   },
-  "homepage": "https://github.com/d0cd/ralph#readme",
+  "homepage": "https://github.com/d0cd/ralphx#readme",
   "devDependencies": {
     "@types/node": "^25.5.0",
+    "@vitest/coverage-v8": "^4.1.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2",
     "vitest": "^4.1.1"

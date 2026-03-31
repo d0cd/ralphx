@@ -1,6 +1,6 @@
-import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { RalphConfigSchema, type RalphConfig } from '../types/config.js';
+import { readJsonFile } from '../sync/atomic-write.js';
 
 const ENV_MAP: Record<string, { key: keyof RalphConfig; type: 'string' | 'number' | 'boolean' }> = {
   RALPH_AGENT_CMD: { key: 'agentCmd', type: 'string' },
@@ -17,25 +17,27 @@ const ENV_MAP: Record<string, { key: keyof RalphConfig; type: 'string' | 'number
   RALPH_CB_COOLDOWN_MINUTES: { key: 'cbCooldownMinutes', type: 'number' },
   RALPH_VERBOSE: { key: 'verbose', type: 'boolean' },
   RALPH_STORY_MAX_CONSECUTIVE_FAILURES: { key: 'storyMaxConsecutiveFailures', type: 'number' },
+  RALPH_MAX_ROUNDS: { key: 'maxRounds', type: 'number' },
+  RALPH_LOOP_MODE: { key: 'loopMode', type: 'string' },
+  RALPH_CONVERGENCE_THRESHOLD: { key: 'convergenceThreshold', type: 'number' },
 };
 
 function parseEnvValue(value: string, type: 'string' | 'number' | 'boolean'): unknown {
   switch (type) {
-    case 'number': return Number(value);
+    case 'number': {
+      const n = Number(value);
+      if (Number.isNaN(n)) {
+        throw new Error(`Invalid numeric value "${value}" in environment variable`);
+      }
+      return n;
+    }
     case 'boolean': return value === 'true' || value === '1';
     case 'string': return value;
   }
 }
 
 function loadFromFile(projectDir: string): Record<string, unknown> {
-  const rcPath = join(projectDir, '.ralph', '.ralphrc');
-  if (!existsSync(rcPath)) return {};
-  try {
-    const raw = readFileSync(rcPath, 'utf-8');
-    return JSON.parse(raw);
-  } catch (e) {
-    throw new Error(`Failed to load config from ${rcPath}: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  return readJsonFile<Record<string, unknown>>(join(projectDir, '.ralphxrc'), {});
 }
 
 function loadFromEnv(env: Record<string, string | undefined>): Record<string, unknown> {
@@ -43,7 +45,11 @@ function loadFromEnv(env: Record<string, string | undefined>): Record<string, un
   for (const [envKey, mapping] of Object.entries(ENV_MAP)) {
     const value = env[envKey];
     if (value !== undefined) {
-      result[mapping.key] = parseEnvValue(value, mapping.type);
+      try {
+        result[mapping.key] = parseEnvValue(value, mapping.type);
+      } catch (e) {
+        throw new Error(`${envKey}="${value}": ${(e instanceof Error ? e.message : String(e))}`);
+      }
     }
   }
   return result;
@@ -55,13 +61,20 @@ interface LoadConfigOptions {
   flags?: Partial<RalphConfig>;
 }
 
+/** Strip keys whose value is undefined so they don't shadow lower-priority sources in the merge. */
+function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
+}
+
 export function loadConfig(options: LoadConfigOptions): RalphConfig {
   const fileConfig = loadFromFile(options.projectDir);
   const envConfig = loadFromEnv(options.env ?? process.env);
   const flags = options.flags ?? {};
 
-  // Resolution: flags > env > file > defaults (zod handles defaults)
-  const merged = { ...fileConfig, ...envConfig, ...flags };
+  // Resolution: flags > env > file > defaults (zod handles defaults).
+  // stripUndefined prevents an explicit `undefined` in a higher-priority
+  // source from shadowing a real value in a lower-priority source.
+  const merged = { ...stripUndefined(fileConfig), ...stripUndefined(envConfig), ...stripUndefined(flags as Record<string, unknown>) };
 
   return RalphConfigSchema.parse(merged);
 }

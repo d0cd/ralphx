@@ -1,8 +1,7 @@
-import { readFileSync } from 'node:fs';
 import type { PRD, Story } from '../types/prd.js';
-import { atomicWriteJson } from '../sync/atomic-write.js';
+import { atomicWriteJson, readJsonFile } from '../sync/atomic-write.js';
+import { sanitizeOutput } from '../core/validator.js';
 
-/** Legacy status values that may exist in older PRD files */
 type LegacyStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
 const LEGACY_STATUSES = new Set<string>(['todo', 'in_progress', 'blocked', 'done']);
 
@@ -16,7 +15,7 @@ function migratePrd(prd: PRD): PRD {
       if (legacyStatus === 'todo' || legacyStatus === 'in_progress' || legacyStatus === 'blocked') {
         story.status = 'active';
         story.passes = false;
-      } else if (legacyStatus === 'done') {
+      } else {
         story.status = 'active';
         story.passes = true;
       }
@@ -30,19 +29,7 @@ function migratePrd(prd: PRD): PRD {
 }
 
 export function loadPrd(path: string): PRD {
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf-8');
-  } catch (e) {
-    throw new Error(`Failed to read PRD file at ${path}: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  let prd: PRD;
-  try {
-    prd = JSON.parse(raw);
-  } catch (e) {
-    throw new Error(`Invalid JSON in PRD file ${path}: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  const prd = readJsonFile<PRD>(path);
 
   if (!prd.stories || !Array.isArray(prd.stories)) {
     throw new Error(`PRD file ${path} is missing required "stories" array`);
@@ -65,6 +52,13 @@ export function getFailingStories(prd: PRD, maxConsecutiveFailures?: number): St
     .sort((a, b) => a.priority - b.priority);
 }
 
+/** Get IDs of all active stories that currently pass */
+export function getPassingStoryIds(prd: PRD): string[] {
+  return prd.stories
+    .filter(s => s.status === 'active' && s.passes)
+    .map(s => s.id);
+}
+
 /** Check if all active stories pass */
 export function allStoriesPass(prd: PRD): boolean {
   const active = prd.stories.filter(s => s.status === 'active');
@@ -85,14 +79,16 @@ export function updateStoryPasses(path: string, storyId: string, passes: boolean
     story.lastError = undefined;
   } else {
     story.consecutiveFailures = (story.consecutiveFailures ?? 0) + 1;
-    story.lastError = error;
+    // Sanitize error before persisting — validation errors may contain
+    // secrets leaked from command output or environment variables.
+    story.lastError = error ? sanitizeOutput(error) : undefined;
   }
 
   atomicWriteJson(path, prd);
 }
 
 /** Reset passes to false for stories whose quality gates now fail */
-export function resetFailingStories(path: string, storyIds: string[]): void {
+export function resetFailingStories(path: string, storyIds: string[], reason?: string): void {
   if (storyIds.length === 0) return;
   const prd = loadPrd(path);
   for (const id of storyIds) {
@@ -100,8 +96,10 @@ export function resetFailingStories(path: string, storyIds: string[]): void {
     if (story && story.passes) {
       story.passes = false;
       story.consecutiveFailures = 0; // reset since this is a regression, not a repeated failure
+      if (reason) {
+        story.lastError = sanitizeOutput(reason);
+      }
     }
   }
   atomicWriteJson(path, prd);
 }
-

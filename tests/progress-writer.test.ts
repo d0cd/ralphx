@@ -8,8 +8,8 @@ describe('Progress Writer', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `ralph-prog-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(join(tmpDir, '.ralph'), { recursive: true });
+    tmpDir = join(tmpdir(), `ralphx-prog-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpDir, { recursive: true });
   });
 
   afterEach(() => {
@@ -24,7 +24,7 @@ describe('Progress Writer', () => {
       timestamp: '2026-01-01T00:00:00Z',
     });
 
-    const content = readFileSync(join(tmpDir, '.ralph', 'progress.md'), 'utf-8');
+    const content = readFileSync(join(tmpDir, 'progress.md'), 'utf-8');
     expect(content).toContain('Iteration 1 (Round 1)');
     expect(content).toContain('[s-1] Add auth');
     expect(content).toContain('PASSED');

@@ -1,0 +1,12 @@
+{
+  "agent": "claude-code",
+  "agentModel": "claude-sonnet-4-6",
+  "contextMode": "continue",
+  "loopMode": "convergent",
+  "timeoutMinutes": 15,
+  "maxIterations": 80,
+  "maxCostUsd": 50.00,
+  "maxRounds": 20,
+  "convergenceThreshold": 2,
+  "verbose": false
+}

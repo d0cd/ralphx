@@ -1,9 +1,8 @@
-import { readFileSync, unlinkSync, existsSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 export function readHint(runDir: string): string | null {
   const hintPath = join(runDir, 'hint.md');
-  if (!existsSync(hintPath)) return null;
 
   let content: string;
   try {
@@ -12,7 +11,7 @@ export function readHint(runDir: string): string | null {
     return null;
   }
 
-  // Delete atomically after reading
+  // Delete after reading so the hint is consumed only once
   try {
     unlinkSync(hintPath);
   } catch {

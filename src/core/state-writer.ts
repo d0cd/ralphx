@@ -2,6 +2,10 @@ import { mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RunState, RunStatus, ValidationResult, IterationRecord, ExitReason } from '../types/state.js';
 import { atomicWriteJson } from '../sync/atomic-write.js';
+import { truncateForState, sanitizeOutput } from './validator.js';
+
+/** Maximum number of iteration records kept in state to prevent unbounded growth */
+const MAX_ITERATION_RECORDS = 200;
 
 interface StateWriterOptions {
   runId: string;
@@ -20,7 +24,7 @@ export class StateWriter {
   private logPath: string;
 
   constructor(options: StateWriterOptions) {
-    this.runDir = join(options.projectDir, '.ralph', 'runs', options.runId);
+    this.runDir = join(options.projectDir, 'runs', options.runId);
     this.statePath = join(this.runDir, 'run-state.json');
     this.logPath = join(this.runDir, 'loop.log');
 
@@ -60,8 +64,32 @@ export class StateWriter {
     await this.flush();
   }
 
+  /**
+   * Restore state from a previous run (for resume). Preserves iteration count,
+   * cost totals, perIteration records, and the original startedAt timestamp.
+   * Must be called after initialize().
+   */
+  async restoreFrom(previous: RunState): Promise<void> {
+    this.state.startedAt = previous.startedAt;
+    this.state.iteration = previous.iteration;
+    this.state.round = previous.round;
+    this.state.cost = { ...previous.cost };
+    this.state.perIteration = [...previous.perIteration];
+    this.state.exitReason = undefined;
+    this.state.lastError = previous.lastError;
+    this.appendLog(`[${this.state.updatedAt}] Resumed from iteration ${previous.iteration}, round ${previous.round}`);
+    await this.flush();
+  }
+
   async recordIteration(record: IterationRecord): Promise<void> {
+    if (record.summary) {
+      record = { ...record, summary: sanitizeOutput(record.summary.slice(0, 200)) };
+    }
     this.state.perIteration.push(record);
+    // Cap stored iteration records to prevent unbounded state growth
+    if (this.state.perIteration.length > MAX_ITERATION_RECORDS) {
+      this.state.perIteration = this.state.perIteration.slice(-MAX_ITERATION_RECORDS);
+    }
     this.state.iteration = record.iteration;
     this.state.round = record.round;
     this.state.cost.totalInputTokens += record.inputTokens;
@@ -99,11 +127,17 @@ export class StateWriter {
   }
 
   setLastAgentOutputSummary(summary: string | undefined): void {
-    this.state.lastAgentOutputSummary = summary;
+    this.state.lastAgentOutputSummary = summary ? sanitizeOutput(summary.slice(0, 200)) : undefined;
   }
 
   setLastError(error: string | undefined): void {
-    this.state.lastError = error;
+    // Sanitize secrets before truncating — error messages from quality gates
+    // or agent output may contain credentials or API keys.
+    this.state.lastError = truncateForState(error ? sanitizeOutput(error) : undefined);
+  }
+
+  setSessionId(sessionId: string | undefined): void {
+    this.state.sessionId = sessionId;
   }
 
   setExitReason(reason: ExitReason): void {
@@ -111,7 +145,7 @@ export class StateWriter {
   }
 
   getState(): RunState {
-    return { ...this.state, perIteration: [...this.state.perIteration] };
+    return { ...this.state, cost: { ...this.state.cost }, perIteration: [...this.state.perIteration] };
   }
 
   async flush(): Promise<void> {

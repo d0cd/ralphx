@@ -1,8 +1,8 @@
-# Ralph Next v0.1
+# ralphx v0.1
 
 ## What is this project?
 
-An autonomous coding loop CLI tool (`ralph-next`) that wraps AI coding agents (Claude Code only in v0.1) in a safe, resumable loop with durable state and budget guardrails.
+An autonomous coding loop CLI tool (`ralphx`) that wraps AI coding agents (Claude Code only in v0.1) in a safe, resumable loop with durable state and budget guardrails.
 
 ## Tech stack
 
@@ -18,13 +18,15 @@ An autonomous coding loop CLI tool (`ralph-next`) that wraps AI coding agents (C
 - `docs/PLAN.md` — implementation plan with tasks and tests
 - `src/` — source code
 - `tests/` — test files
-- `.ralph/` — runtime directory (created in target repos, not in this repo's source)
+- `.ralphx/` — runtime directory (created in target repos, not in this repo's source)
 
 ## Source tree
 
 ```
 src/
-├── cli/index.ts          — CLI entry point (commander)
+├── cli/
+│   ├── index.ts          — CLI entry point (commander)
+│   └── helpers.ts        — Workspace/run path helpers
 ├── core/
 │   ├── loop.ts           — Main orchestrator
 │   ├── state-writer.ts   — Atomic run state persistence
@@ -34,6 +36,7 @@ src/
 │   ├── hint.ts           — Hint file consumption
 │   ├── resume.ts         — Find resumable runs
 │   ├── logger.ts         — Structured log levels
+│   ├── errors.ts         — Error handling utilities
 │   └── progress-writer.ts — Progress markdown output
 ├── agents/
 │   └── claude-code.ts    — Claude Code CLI/SDK adapter
@@ -75,36 +78,37 @@ src/
 - Smallest change that solves the problem — no refactoring outside the task
 - All cost math is estimates — label clearly, never present as exact
 - Protected paths enforced in prompt AND validation — prompt alone is not sufficient
-- Config resolution: CLI flag > env var > `.ralph/.ralphrc` > defaults
+- Config resolution: CLI flag > env var > `.ralphx/<workspace>/.ralphxrc` > defaults
 - Every phase of implementation ends with a mandatory audit before continuing
 
 ## CLI commands
 
+Every command takes a `<workspace>` name. Each workspace is independent at `.ralphx/<workspace>/`.
+
 ```
-ralph init                          — scaffold .ralph/ directory
-ralph run [--prompt "..."] [--context-mode fresh|continue] [--max-iterations N] [--max-cost USD] [--timeout M] [--verbose] [--resume <runId>]
-ralph status [--run <id>]           — show run status
-ralph logs [--run <id>] [-n lines]  — tail loop log
-ralph cost [--run <id>]             — show cost breakdown
-ralph resume <runId>                — check if run is resumable
-ralph hint --run <id> "message"     — inject hint for next iteration
-ralph pause --run <id>              — mark run as paused
-ralph dry-run                       — show resolved config + PRD without running
-ralph import <file> [--project name] — parse markdown into prd.json
-ralph workflow save <name>          — save .ralph/ config as reusable workflow
-ralph workflow use <name>           — apply saved workflow to current project
-ralph workflow list                 — list available workflows
+ralphx init <workspace>                          — create workspace with template files
+ralphx run <workspace> [options]                 — start or resume a coding loop
+ralphx status <workspace> [--run <id>]           — show run status
+ralphx logs <workspace> [--run <id>] [-n lines]  — tail loop log
+ralphx cost <workspace> [--run <id>]             — show cost breakdown
+ralphx hint <workspace> "msg" --run <id>         — inject hint for next iteration
+ralphx pause <workspace> --run <id>              — mark run as paused
+ralphx dry-run <workspace>                       — show resolved config + PRD without running
+ralphx import <file> <workspace>                 — parse markdown into prd.json
+ralphx workflow save <name> <workspace>          — save workspace config as template
+ralphx workflow use <name> <workspace>           — apply template to workspace
+ralphx workflow list                             — list saved templates
 ```
 
 ## Convergence model
 
 Stories have `passes: boolean` (loop-computed) and `status: 'active' | 'deferred'` (human intent).
 - One round = one pass through all failing stories
-- `passes` flipped by the loop based on quality gate results, not agent claims
+- `passes` flipped by the loop based on quality gate results, not the agent
 - At round start, all passing stories are re-evaluated; regressions flip `passes` back to false
 - Exit when: all stories pass (converged), zero-fix round (no_progress), budget/iterations exceeded
 - Per-story circuit breaker: skip stories that fail N consecutive times
 
 ## Implementation status
 
-Convergent loop model with workflows. 242 tests, 24 test files, build and types clean.
+Convergent loop model with workflows. 400 tests, 24 test files, build and types clean.

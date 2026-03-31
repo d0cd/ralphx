@@ -12,16 +12,6 @@ describe('SignalHandler', () => {
     handler.unregister();
   });
 
-  it('isStopRequested is false after creation', () => {
-    expect(handler.isStopRequested()).toBe(false);
-  });
-
-  it('sets isStopRequested to true on first signal', () => {
-    handler.register();
-    handler.handleSignal('SIGINT');
-    expect(handler.isStopRequested()).toBe(true);
-  });
-
   it('invokes onStop callback on first signal', () => {
     const callback = vi.fn();
     handler.onStop(callback);

@@ -147,10 +147,11 @@ describe('CircuitBreaker', () => {
     expect(cb.getState()).toBe('closed');
   });
 
-  it('trips on repeated validation failures', () => {
-    for (let i = 0; i < 3; i++) {
-      cb.recordIteration({ madeProgress: false, validationFailed: true });
-    }
+  it('no-progress counter tracks iterations without progress regardless of error', () => {
+    // 3 no-progress iterations (some with errors, some without) should trip
+    cb.recordIteration({ madeProgress: false });
+    cb.recordIteration({ madeProgress: false, error: 'some error' });
+    cb.recordIteration({ madeProgress: false });
     expect(cb.getState()).toBe('open');
   });
 });

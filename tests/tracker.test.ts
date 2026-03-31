@@ -27,7 +27,7 @@ describe('PRD Tracker', () => {
   let prdPath: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `ralph-prd-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = join(tmpdir(), `ralphx-prd-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tmpDir, { recursive: true });
     prdPath = join(tmpDir, 'prd.json');
   });
@@ -45,12 +45,12 @@ describe('PRD Tracker', () => {
     });
 
     it('throws on missing file', () => {
-      expect(() => loadPrd(join(tmpDir, 'nope.json'))).toThrow('Failed to read PRD file');
+      expect(() => loadPrd(join(tmpDir, 'nope.json'))).toThrow('Failed to read JSON from');
     });
 
     it('throws on invalid JSON', () => {
       writeFileSync(prdPath, '{ broken json');
-      expect(() => loadPrd(prdPath)).toThrow('Invalid JSON in PRD file');
+      expect(() => loadPrd(prdPath)).toThrow('Failed to read JSON from');
     });
 
     it('throws on missing stories array', () => {
@@ -60,7 +60,7 @@ describe('PRD Tracker', () => {
 
     it('throws on empty file', () => {
       writeFileSync(prdPath, '');
-      expect(() => loadPrd(prdPath)).toThrow('Invalid JSON');
+      expect(() => loadPrd(prdPath)).toThrow('Failed to read JSON from');
     });
 
     it('throws on missing version or projectName', () => {
@@ -178,6 +178,14 @@ describe('PRD Tracker', () => {
       const prd = loadPrd(prdPath);
       expect(prd.stories[1].passes).toBe(false);
       expect(prd.stories[2].passes).toBe(false);
+    });
+
+    it('stores lastError via sanitizeOutput (truncation)', () => {
+      writeFileSync(prdPath, JSON.stringify(makePrd()));
+      const longError = 'x'.repeat(5000);
+      updateStoryPasses(prdPath, 's-1', false, longError);
+      const prd = loadPrd(prdPath);
+      expect(prd.stories[0].lastError!.length).toBeLessThanOrEqual(2000);
     });
   });
 

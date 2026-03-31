@@ -32,7 +32,6 @@ export function parseRequirements(markdown: string, projectName: string): PRD {
       continue;
     }
 
-    // Skip h1 lines
     if (line.match(/^#\s+/)) continue;
 
     if (currentTitle !== null) {

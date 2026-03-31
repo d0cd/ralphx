@@ -9,8 +9,8 @@ describe('Hint Injection', () => {
   let runDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `ralph-hint-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    runDir = join(tmpDir, '.ralph', 'runs', 'test-run');
+    tmpDir = join(tmpdir(), `ralphx-hint-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    runDir = join(tmpDir, 'runs', 'test-run');
     mkdirSync(runDir, { recursive: true });
   });
 

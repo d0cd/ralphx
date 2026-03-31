@@ -10,8 +10,8 @@ describe('StateWriter', () => {
   let ralphDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `ralph-sw-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    ralphDir = join(tmpDir, '.ralph');
+    tmpDir = join(tmpdir(), `ralphx-sw-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    ralphDir = tmpDir;
     mkdirSync(ralphDir, { recursive: true });
   });
 
@@ -200,6 +200,26 @@ describe('StateWriter', () => {
     expect(writer.getState().lastError).toBeUndefined();
   });
 
+  it('setLastError stores error messages', async () => {
+    const writer = makeWriter();
+    await writer.initialize();
+
+    writer.setLastError('Connection failed: some error');
+    const state = writer.getState();
+    expect(state.lastError).toContain('Connection failed');
+  });
+
+  it('setLastError truncates very long error messages', async () => {
+    const writer = makeWriter();
+    await writer.initialize();
+
+    const longError = 'Error: '.repeat(200);
+    writer.setLastError(longError);
+    const state = writer.getState();
+    // sanitizeOutput caps at 500, truncateForState also caps at 500
+    expect(state.lastError!.length).toBeLessThanOrEqual(520); // 500 + "[truncated]"
+  });
+
   it('setExitReason is observable through getState', async () => {
     const writer = makeWriter();
     await writer.initialize();
@@ -256,5 +276,133 @@ describe('StateWriter', () => {
 
     const afterSize = readFileSync(logPath, 'utf-8').length;
     expect(afterSize).toBeGreaterThan(initialSize);
+  });
+
+  it('restoreFrom preserves previous iteration count and cost totals', async () => {
+    const writer = makeWriter();
+    await writer.initialize();
+
+    const previousState: RunState = {
+      runId: 'test-run-1',
+      projectDir: tmpDir,
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:05:00Z',
+      pid: 1234,
+      agent: 'claude-code',
+      status: 'interrupted',
+      iteration: 7,
+      round: 3,
+      contextMode: 'continue',
+      cost: {
+        totalInputTokens: 15000,
+        totalOutputTokens: 8000,
+        totalCacheReadTokens: 500,
+        totalCacheWriteTokens: 200,
+        estimatedCostUsd: 0.42,
+      },
+      perIteration: [
+        {
+          iteration: 1, round: 1, storyId: 'story-1',
+          startedAt: '2026-01-01T00:00:00Z', endedAt: '2026-01-01T00:01:00Z',
+          durationMs: 60000, inputTokens: 1000, outputTokens: 500,
+          cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.05,
+          validationPassed: true,
+        },
+      ],
+      exitReason: 'interrupted',
+      lastError: 'previous error',
+    };
+
+    await writer.restoreFrom(previousState);
+
+    const state = writer.getState();
+    expect(state.iteration).toBe(7);
+    expect(state.round).toBe(3);
+    expect(state.cost.totalInputTokens).toBe(15000);
+    expect(state.cost.totalOutputTokens).toBe(8000);
+    expect(state.cost.estimatedCostUsd).toBe(0.42);
+    expect(state.perIteration).toHaveLength(1);
+    expect(state.startedAt).toBe('2026-01-01T00:00:00Z');
+    expect(state.exitReason).toBeUndefined();
+    expect(state.lastError).toBe('previous error');
+    expect(state.status).toBe('running');
+  });
+
+  it('restoreFrom then recordIteration accumulates correctly', async () => {
+    const writer = makeWriter();
+    await writer.initialize();
+
+    await writer.restoreFrom({
+      runId: 'test-run-1',
+      projectDir: tmpDir,
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:05:00Z',
+      pid: 1234,
+      agent: 'claude-code',
+      status: 'interrupted',
+      iteration: 3,
+      round: 1,
+      contextMode: 'continue',
+      cost: {
+        totalInputTokens: 5000,
+        totalOutputTokens: 2000,
+        totalCacheReadTokens: 0,
+        totalCacheWriteTokens: 0,
+        estimatedCostUsd: 0.10,
+      },
+      perIteration: [],
+    });
+
+    await writer.recordIteration({
+      iteration: 4, round: 2, storyId: 'story-2',
+      startedAt: '2026-01-01T00:06:00Z', endedAt: '2026-01-01T00:07:00Z',
+      durationMs: 60000, inputTokens: 1000, outputTokens: 500,
+      cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.05,
+      validationPassed: true,
+    });
+
+    const state = writer.getState();
+    expect(state.iteration).toBe(4);
+    expect(state.cost.totalInputTokens).toBe(6000);
+    expect(state.cost.estimatedCostUsd).toBeCloseTo(0.15);
+  });
+
+  it('two independent runs produce separate state files', async () => {
+    const writer1 = makeWriter('run-aaa');
+    const writer2 = makeWriter('run-bbb');
+
+    await writer1.initialize();
+    await writer2.initialize();
+
+    await writer1.recordIteration({
+      iteration: 1, round: 1, storyId: 's1',
+      startedAt: '2026-01-01T00:00:00Z', endedAt: '2026-01-01T00:01:00Z',
+      durationMs: 60000, inputTokens: 1000, outputTokens: 500,
+      cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0.05,
+      validationPassed: true,
+    });
+
+    // Writer 2 should be unaffected
+    const state2 = writer2.getState();
+    expect(state2.iteration).toBe(0);
+    expect(state2.cost.totalInputTokens).toBe(0);
+
+    // Writer 1 has its own state
+    const state1 = writer1.getState();
+    expect(state1.iteration).toBe(1);
+    expect(state1.runId).toBe('run-aaa');
+
+    // Both state files exist on disk independently
+    const path1 = join(ralphDir, 'runs', 'run-aaa', 'run-state.json');
+    const path2 = join(ralphDir, 'runs', 'run-bbb', 'run-state.json');
+    expect(existsSync(path1)).toBe(true);
+    expect(existsSync(path2)).toBe(true);
+
+    const disk1: RunState = JSON.parse(readFileSync(path1, 'utf-8'));
+    const disk2: RunState = JSON.parse(readFileSync(path2, 'utf-8'));
+    expect(disk1.runId).toBe('run-aaa');
+    expect(disk2.runId).toBe('run-bbb');
+    expect(disk1.iteration).toBe(1);
+    expect(disk2.iteration).toBe(0);
   });
 });

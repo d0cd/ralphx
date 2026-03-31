@@ -32,8 +32,8 @@ describe('Resume', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `ralph-resume-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(join(tmpDir, '.ralph', 'runs', 'test-run'), { recursive: true });
+    tmpDir = join(tmpdir(), `ralphx-resume-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(join(tmpDir, 'runs', 'test-run'), { recursive: true });
   });
 
   afterEach(() => {
@@ -42,7 +42,7 @@ describe('Resume', () => {
 
   function writeState(state: RunState) {
     writeFileSync(
-      join(tmpDir, '.ralph', 'runs', state.runId, 'run-state.json'),
+      join(tmpDir, 'runs', state.runId, 'run-state.json'),
       JSON.stringify(state),
     );
   }
@@ -130,9 +130,21 @@ describe('Resume', () => {
     expect(state!.status).toBe('interrupted');
   });
 
-  it('findResumableRun throws on corrupt JSON', () => {
-    const statePath = join(tmpDir, '.ralph', 'runs', 'test-run', 'run-state.json');
+  it('findResumableRun throws on corrupt JSON (surfaces data corruption)', () => {
+    const statePath = join(tmpDir, 'runs', 'test-run', 'run-state.json');
     writeFileSync(statePath, '{ broken json!!!');
-    expect(() => findResumableRun(tmpDir, 'test-run')).toThrow('Failed to read run state');
+    expect(() => findResumableRun(tmpDir, 'test-run')).toThrow(/Failed to read JSON from/);
+  });
+
+  it('findResumableRun throws on empty state file (surfaces data corruption)', () => {
+    const statePath = join(tmpDir, 'runs', 'test-run', 'run-state.json');
+    writeFileSync(statePath, '');
+    expect(() => findResumableRun(tmpDir, 'test-run')).toThrow(/Failed to read JSON from/);
+  });
+
+  it('findResumableRun throws on partial/truncated JSON (surfaces data corruption)', () => {
+    const statePath = join(tmpDir, 'runs', 'test-run', 'run-state.json');
+    writeFileSync(statePath, '{"runId":"test","status":"inter');
+    expect(() => findResumableRun(tmpDir, 'test-run')).toThrow(/Failed to read JSON from/);
   });
 });
