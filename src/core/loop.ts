@@ -127,9 +127,13 @@ export class RalphLoop {
     this.signalHandler.register();
 
     await this.stateWriter.initialize();
+
+    // Record git HEAD at start for diff/undo capability
+    const gitHead = this.getGitHead();
+    if (gitHead) this.stateWriter.setGitHeadAtStart(gitHead);
+
     if (this.previousState) {
       await this.stateWriter.restoreFrom(this.previousState);
-      // Restore session ID for continue-mode session continuity on resume
       if (this.previousState.sessionId) {
         this.lastSessionId = this.previousState.sessionId;
       }
@@ -252,7 +256,7 @@ export class RalphLoop {
             break;
           }
 
-          const result = await this.executeStory(story, ++iteration, round);
+          const result = await this.executeStory(story, ++iteration, round, stories.length);
           if (result) roundFixCount++;
         }
 
@@ -273,6 +277,15 @@ export class RalphLoop {
           warnings: [],
           reasons: gateResult.passed ? [] : [`Quality gates failed: ${gateResult.commandResults.filter(r => !r.passed).map(r => r.name).join(', ')}`],
         });
+
+        // Progress: round-end gate result
+        if (gateResult.passed) {
+          const postState = this.stateWriter.getState();
+          console.log(`  Round ${round}: gates passed (~$${postState.cost.estimatedCostUsd.toFixed(2)})`);
+        } else {
+          const failedNames = gateResult.commandResults.filter(r => !r.passed).map(r => r.name).join(', ');
+          console.log(`  Round ${round}: gates FAILED (${failedNames})`);
+        }
 
         if (!gateResult.passed) {
           const failedGates = gateResult.commandResults.filter(r => !r.passed);
@@ -377,7 +390,7 @@ export class RalphLoop {
   }
 
   /** Execute a single story: run agent, validate, update passes. Returns true if story passes. */
-  private async executeStory(story: Story, iteration: number, round: number): Promise<boolean> {
+  private async executeStory(story: Story, iteration: number, round: number, totalStories: number): Promise<boolean> {
     log.info(`Iteration ${iteration} (round ${round}): [${story.id}] ${story.title}`);
     this.stateWriter.setCurrentStory(story.id, story.title);
 
@@ -507,6 +520,11 @@ export class RalphLoop {
       costUsd: iterationCost,
     });
 
+    // Default progress output (always shown, not just --verbose)
+    const icon = passed ? '✓' : '✗';
+    const costSoFar = this.stateWriter.getState().cost.estimatedCostUsd;
+    console.log(`  [${iteration}] ${icon} ${story.id} (~$${costSoFar.toFixed(2)})`);
+
     if (passed) log.info(`Story [${story.id}] passes`);
 
     appendProgress(this.projectDir, {
@@ -591,6 +609,14 @@ export class RalphLoop {
       this.cachedWorkspacePrefix = '.ralphx/';
     }
     return this.cachedWorkspacePrefix;
+  }
+
+  private getGitHead(): string | null {
+    try {
+      return execSync('git rev-parse HEAD', {
+        cwd: this.projectRoot, encoding: 'utf-8', timeout: 5000,
+      }).trim();
+    } catch { return null; }
   }
 
   private getDiffSize(): number {

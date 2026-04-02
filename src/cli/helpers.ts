@@ -57,7 +57,7 @@ export function findLatestRun(projectDir: string, workspace: string): string | n
     dirEntries = readdirSync(runsDir, { withFileTypes: true });
   } catch (err) {
     console.error(`Failed to read runs directory ${runsDir}: ${(err instanceof Error ? err.message : String(err))}`);
-    console.error(`Re-initialize with: ralphx init ${workspace}`);
+    console.error(`Check .ralphx/${workspace}/runs/ is accessible.`);
     return null;
   }
 

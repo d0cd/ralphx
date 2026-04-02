@@ -3,6 +3,7 @@
 import { Command, InvalidArgumentError } from 'commander';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { execSync } from 'node:child_process';
 import { loadConfig } from '../config/loader.js';
 import { loadPrd } from '../prd/tracker.js';
 import { parseRequirements } from '../prd/importer.js';
@@ -11,6 +12,7 @@ import { RalphLoop } from '../core/loop.js';
 import { ClaudeCodeAgent } from '../agents/claude-code.js';
 import { saveWorkflow, useWorkflow, listWorkflows } from '../workflow/manager.js';
 import { resolveProjectDir, getWorkspaceDir, getRunsDir, findLatestRun, loadRunState, validatePathSegment } from './helpers.js';
+import { printAgentHelp } from './agent-help.js';
 import { readJsonFile, atomicWriteJson } from '../sync/atomic-write.js';
 import type { RalphConfig } from '../types/config.js';
 import type { ExitReason, RunState } from '../types/state.js';
@@ -61,7 +63,7 @@ function requireWorkspace(projectDir: string, workspace: string): string {
   const wsDir = getWorkspaceDir(projectDir, workspace);
   if (!existsSync(join(wsDir, 'prd.json'))) {
     console.error(`Workspace "${workspace}" does not exist.`);
-    console.error(`Run \`ralphx init ${workspace}\` first.`);
+    console.error(`Create workspace files in .ralphx/${workspace}/ (see \`ralphx --agent-help\`).`);
     process.exit(1);
   }
   return wsDir;
@@ -103,95 +105,18 @@ Each workspace is an independent environment with its own PRD,
 prompt, config, and run history, stored at .ralphx/<workspace>/.
 
 Quick start:
-  $ ralphx init audit
-  $ ralphx import requirements.md audit
+  $ mkdir -p .ralphx/audit
+  $ # Create prd.json, PROMPT.md in .ralphx/audit/
   $ ralphx run audit --max-iterations 20 --max-cost 5.00
   $ ralphx status audit
 
-Workspaces:
-  You can run multiple independent loops on the same repo:
-  $ ralphx init dev
-  $ ralphx init audit
-  $ ralphx run dev &
-  $ ralphx run audit
-
-Workspace directory layout:
-  .ralphx/<workspace>/
-  ├── prd.json       Task definitions and acceptance criteria
-  ├── PROMPT.md      Instructions for the coding loop
-  ├── AGENT.md       Repo-specific agent guidance
-  ├── .ralphxrc      Configuration (budget, timeouts, etc.)
-  └── runs/          Run history (one subdirectory per run)
+For workspace setup instructions: ralphx --agent-help
 
 Currently supports Claude Code as the agent backend.`)
-  .version('0.1.0');
+  .version('0.1.0')
+  .option('--agent-help', 'Print detailed workspace setup guide for AI agents');
 
 // --- Commands ---
-
-program
-  .command('init')
-  .description('Create a new workspace with template files.')
-  .argument('<workspace>', 'Workspace name (e.g., "audit", "dev", "feature-auth")')
-  .addHelpText('after', `
-Examples:
-  $ ralphx init audit           Create .ralphx/audit/ with template files
-  $ ralphx init dev             Create .ralphx/dev/ with template files
-
-Created files:
-  .ralphx/<workspace>/
-  ├── PROMPT.md      Placeholder loop prompt (edit to describe what the loop should do)
-  ├── AGENT.md       Repo-specific agent guidance (test commands, conventions)
-  ├── prd.json       Empty PRD with template structure (add stories here)
-  ├── .ralphxrc      Default config: agent=claude-code, contextMode=continue,
-  │                  timeoutMinutes=20, maxIterations=50
-  └── runs/          Directory for run history (created automatically)
-
-After init, edit these files to configure your loop:
-  .ralphx/<workspace>/prd.json    Define stories with acceptance criteria
-  .ralphx/<workspace>/PROMPT.md   Write the loop prompt
-  .ralphx/<workspace>/AGENT.md    Add repo-specific commands and guidance
-  .ralphx/<workspace>/.ralphxrc   Set budget, timeouts, and other config`)
-  .action((workspace: string) => cliAction(
-    'Failed to initialize workspace',
-    () => {
-      const projectDir = resolveProjectDir();
-      const wsDir = getWorkspaceDir(projectDir, workspace);
-
-      mkdirSync(join(wsDir, 'runs'), { recursive: true });
-
-      const promptPath = join(wsDir, 'PROMPT.md');
-      if (!existsSync(promptPath)) {
-        writeFileSync(promptPath, '# Loop Prompt\n\nDescribe what the loop should do.\n');
-      }
-
-      const agentPath = join(wsDir, 'AGENT.md');
-      if (!existsSync(agentPath)) {
-        writeFileSync(agentPath, '# Agent Instructions\n\nRepo-specific commands and guidance.\n');
-      }
-
-      const prdPath = join(wsDir, 'prd.json');
-      if (!existsSync(prdPath)) {
-        writeFileSync(prdPath, JSON.stringify({
-          version: '1.0',
-          projectName: workspace,
-          stories: [],
-          qualityGates: {},
-        }, null, 2));
-      }
-
-      const rcPath = join(wsDir, '.ralphxrc');
-      if (!existsSync(rcPath)) {
-        writeFileSync(rcPath, JSON.stringify({
-          contextMode: 'continue',
-          timeoutMinutes: 20,
-          maxIterations: 50,
-        }, null, 2));
-      }
-
-      console.log(`Initialized workspace "${workspace}" at ${'.ralphx'}/${workspace}/`);
-    },
-    'Check that you have write permissions to the current directory.',
-  )());
 
 program
   .command('run')
@@ -281,10 +206,13 @@ program
   .description('Show the status of the latest or a specific run.')
   .argument('<workspace>', 'Workspace name')
   .option('--run <runId>', 'Show a specific run instead of the latest')
+  .option('--json', 'Output run state as JSON (for programmatic use)')
   .addHelpText('after', `
 Examples:
   $ ralphx status audit                Show latest run in "audit" workspace
-  $ ralphx status dev --run abc123     Show a specific run`)
+  $ ralphx status dev --run abc123     Show a specific run
+  $ ralphx status audit --json         Output as JSON (for scripts/agents)
+  $ ralphx status audit --json | jq '.exitReason'`)
   .action((workspace: string, opts) => cliAction(
     'Failed to read status',
     () => {
@@ -294,6 +222,11 @@ Examples:
 
       const state = loadRunState(projectDir, workspace, runId);
       if (!state) runNotFound(runId, workspace);
+
+      if (opts.json) {
+        console.log(JSON.stringify(state, null, 2));
+        return;
+      }
 
       console.log(kv('Run', state.runId));
       console.log(kv('Status', state.status));
@@ -364,10 +297,12 @@ program
   .description('Show token usage and cost breakdown for a run.')
   .argument('<workspace>', 'Workspace name')
   .option('--run <runId>', 'Show a specific run instead of the latest')
+  .option('--json', 'Output cost data as JSON')
   .addHelpText('after', `
 Examples:
   $ ralphx cost audit                  Cost of latest run
   $ ralphx cost dev --run abc123      Cost of specific run
+  $ ralphx cost audit --json           Output as JSON
 
 All costs are estimates based on public model pricing.`)
   .action((workspace: string, opts) => cliAction(
@@ -379,6 +314,11 @@ All costs are estimates based on public model pricing.`)
 
       const state = loadRunState(projectDir, workspace, runId);
       if (!state) runNotFound(runId, workspace);
+
+      if (opts.json) {
+        console.log(JSON.stringify({ runId: state.runId, iteration: state.iteration ?? 0, cost: state.cost ?? null }, null, 2));
+        return;
+      }
 
       console.log(kv('Run', state.runId));
       console.log(kv('Iterations', state.iteration ?? 0));
@@ -461,21 +401,117 @@ Resume later with: ralphx run <workspace> --resume <runId>`)
   )());
 
 program
+  .command('diff')
+  .description('Show what files the loop changed since the run started.')
+  .argument('<workspace>', 'Workspace name')
+  .option('--run <runId>', 'Show diff for a specific run')
+  .option('--stat', 'Show file summary only (default: full diff)')
+  .addHelpText('after', `
+Examples:
+  $ ralphx diff audit                  Full diff of latest run's changes
+  $ ralphx diff audit --stat           File summary only
+  $ ralphx diff dev --run abc123       Diff for a specific run
+
+Shows changes made since the run started, excluding workspace files.
+Uses the git HEAD recorded at run start for accurate diffing.`)
+  .action((workspace: string, opts) => cliAction(
+    'Failed to show diff',
+    () => {
+      const projectDir = resolveProjectDir();
+      requireWorkspace(projectDir, workspace);
+      const runId = requireRunId(projectDir, workspace, opts.run);
+
+      const state = loadRunState(projectDir, workspace, runId);
+      if (!state) runNotFound(runId, workspace);
+
+      const gitHead = state.gitHeadAtStart as string | undefined;
+      if (!gitHead) {
+        console.error('No git HEAD recorded for this run. The run may predate this feature.');
+        process.exit(1);
+      }
+      // Validate SHA format to prevent command injection
+      if (!/^[0-9a-f]{7,40}$/i.test(gitHead)) {
+        console.error(`Invalid git SHA in run state: "${gitHead}"`);
+        process.exit(1);
+      }
+
+      const diffCmd = opts.stat ? `git diff --stat ${gitHead}` : `git diff ${gitHead}`;
+      try {
+        const output = execSync(diffCmd, {
+          cwd: projectDir, encoding: 'utf-8', timeout: 30000, maxBuffer: 10 * 1024 * 1024,
+        });
+        if (output.trim()) {
+          process.stdout.write(output);
+        } else {
+          console.log('No changes since run started.');
+        }
+      } catch (e) {
+        console.error(`Git diff failed: ${(e instanceof Error ? e.message : String(e))}`);
+        process.exit(1);
+      }
+    },
+  )());
+
+program
   .command('dry-run')
   .description('Show resolved config, PRD summary, and quality gates without running the loop.')
   .argument('<workspace>', 'Workspace name')
+  .option('--json', 'Output resolved config and PRD as JSON')
   .addHelpText('after', `
 Examples:
-  $ ralphx dry-run audit
+  $ ralphx dry-run audit               Verify workspace setup before running
+  $ ralphx dry-run audit --json        Output as JSON (for scripts/agents)
 
-Useful for verifying your workspace is configured correctly before starting a run.`)
-  .action((workspace: string) => cliAction(
+Validates prd.json schema and reports errors before spending money.`)
+  .action((workspace: string, opts) => cliAction(
     'Dry run failed',
     () => {
       const projectDir = resolveProjectDir();
       const wsDir = requireWorkspace(projectDir, workspace);
 
       const config = loadConfig({ projectDir: wsDir });
+      const prd = loadPrd(join(wsDir, 'prd.json'));
+
+      // Validate PRD schema
+      const errors: string[] = [];
+      if (!prd.projectName) errors.push('prd.json: missing "projectName"');
+      if (!prd.stories || !Array.isArray(prd.stories)) errors.push('prd.json: missing "stories" array');
+      const ids = new Set<string>();
+      for (const s of prd.stories) {
+        if (!s.id) errors.push(`Story missing "id" field (title: "${s.title ?? 'unknown'}")`);
+        if (!s.title) errors.push(`Story "${s.id ?? '?'}": missing "title"`);
+        if (!s.description) errors.push(`Story "${s.id ?? '?'}": missing "description"`);
+        if (!s.acceptanceCriteria || s.acceptanceCriteria.length === 0) {
+          errors.push(`Story "${s.id ?? '?'}": missing or empty "acceptanceCriteria"`);
+        }
+        if (s.id && ids.has(s.id)) errors.push(`Duplicate story id: "${s.id}"`);
+        if (s.id) ids.add(s.id);
+      }
+      for (const [name, cmd] of Object.entries(prd.qualityGates)) {
+        if (cmd !== undefined && cmd !== null && typeof cmd !== 'string') {
+          errors.push(`Quality gate "${name}": command must be a string`);
+        }
+      }
+
+      if (opts.json) {
+        const active = prd.stories.filter(s => s.status === 'active');
+        console.log(JSON.stringify({
+          workspace,
+          config,
+          prd: {
+            projectName: prd.projectName,
+            totalStories: prd.stories.length,
+            active: active.length,
+            passing: active.filter(s => s.passes).length,
+            failing: active.filter(s => !s.passes).length,
+            qualityGates: prd.qualityGates,
+          },
+          errors,
+          valid: errors.length === 0,
+        }, null, 2));
+        return;
+      }
+
       console.log('=== Resolved Config ===');
       console.log(kv('Workspace', workspace));
       console.log(kv('Agent', config.agentCmd ?? 'claude-code (default)'));
@@ -496,7 +532,6 @@ Useful for verifying your workspace is configured correctly before starting a ru
       console.log(kv('Story failures', `${config.storyMaxConsecutiveFailures} max consecutive`));
       console.log('');
 
-      const prd = loadPrd(join(wsDir, 'prd.json'));
       const active = prd.stories.filter(s => s.status === 'active');
       const passing = active.filter(s => s.passes);
       const failing = active.filter(s => !s.passes);
@@ -522,9 +557,19 @@ Useful for verifying your workspace is configured correctly before starting a ru
       }
       console.log('');
 
+      if (errors.length > 0) {
+        console.log('=== Validation Errors ===');
+        for (const err of errors) {
+          console.log(`  ✗ ${err}`);
+        }
+        console.log('');
+        console.log('Fix these errors before running.');
+        process.exit(1);
+      }
+
       console.log('Dry run complete. No agent was invoked.');
     },
-    `Check ${'.ralphx'}/${workspace}/${'prd.json'} and ${'.ralphx'}/${workspace}/${'.ralphxrc'} for syntax errors.`,
+    `Check .ralphx/${workspace}/prd.json and .ralphx/${workspace}/.ralphxrc for syntax errors.`,
   )());
 
 program
@@ -582,7 +627,7 @@ Parsing rules:
 
         console.log(`Imported ${prd.stories.length} ${prd.stories.length === 1 ? 'story' : 'stories'} into ${'.ralphx'}/${workspace}/${'prd.json'}`);
         if (!wsExists) {
-          console.log(`Tip: Run \`ralphx init ${workspace}\` to create PROMPT.md, AGENT.md, and .ralphxrc.`);
+          console.log(`Tip: Create PROMPT.md, AGENT.md, and .ralphxrc in .ralphx/${workspace}/ (see \`ralphx --agent-help\`).`);
         }
       },
       'Ensure the file is valid markdown with ## headings for each story.',
@@ -622,7 +667,7 @@ Saves PROMPT.md, AGENT.md, .ralphxrc, and prd.json to ~/.ralphx/workflows/<name>
       saveWorkflow(name, wsDir);
       console.log(`Workflow "${name}" saved from workspace "${workspace}".`);
     },
-    `Ensure workspace "${workspace}" is initialized with: ralphx init ${workspace}`,
+    `Ensure workspace "${workspace}" exists with prd.json (see \`ralphx --agent-help\`).`,
   )());
 
 workflowCmd
@@ -673,5 +718,11 @@ Templates are stored in ~/.ralphx/workflows/.`)
     },
     'Ensure ~/.ralphx/workflows/ is readable.',
   )());
+
+// Handle --agent-help before command parsing
+if (process.argv.includes('--agent-help')) {
+  printAgentHelp();
+  process.exit(0);
+}
 
 program.parse();

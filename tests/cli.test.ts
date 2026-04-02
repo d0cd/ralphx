@@ -440,4 +440,28 @@ Implement signup page.
       expect(loaded.stories[0].title).toBe('Add login');
     });
   });
+
+  describe('ralphx --agent-help', () => {
+    it('prints workspace setup guide with all key sections', async () => {
+      const { printAgentHelp } = await import('../src/cli/agent-help.js');
+      const chunks: string[] = [];
+      const origWrite = process.stdout.write;
+      process.stdout.write = ((chunk: string) => { chunks.push(chunk); return true; }) as typeof process.stdout.write;
+      try {
+        printAgentHelp();
+      } finally {
+        process.stdout.write = origWrite;
+      }
+      const output = chunks.join('');
+      expect(output).toContain('prd.json');
+      expect(output).toContain('acceptanceCriteria');
+      expect(output).toContain('.ralphxrc');
+      expect(output).toContain('PROMPT.md');
+      expect(output).toContain('AGENT.md');
+      expect(output).toContain('qualityGates');
+      expect(output).toContain('convergenceThreshold');
+      expect(output).toContain('protectedPaths');
+      expect(output).toContain('converged');
+    });
+  });
 });
