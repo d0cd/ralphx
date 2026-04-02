@@ -140,6 +140,10 @@ export class StateWriter {
     this.state.sessionId = sessionId;
   }
 
+  setGitHeadAtStart(sha: string): void {
+    this.state.gitHeadAtStart = sha;
+  }
+
   setExitReason(reason: ExitReason): void {
     this.state.exitReason = reason;
   }

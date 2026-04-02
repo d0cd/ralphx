@@ -53,6 +53,7 @@ export interface RunState {
   startedAt: string;
   updatedAt: string;
   pid: number;
+  gitHeadAtStart?: string;
 
   agent: string;
   model?: string;

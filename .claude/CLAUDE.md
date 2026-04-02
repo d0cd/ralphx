@@ -86,18 +86,19 @@ src/
 Every command takes a `<workspace>` name. Each workspace is independent at `.ralphx/<workspace>/`.
 
 ```
-ralphx init <workspace>                          — create workspace with template files
 ralphx run <workspace> [options]                 — start or resume a coding loop
 ralphx status <workspace> [--run <id>]           — show run status
 ralphx logs <workspace> [--run <id>] [-n lines]  — tail loop log
 ralphx cost <workspace> [--run <id>]             — show cost breakdown
 ralphx hint <workspace> "msg" --run <id>         — inject hint for next iteration
 ralphx pause <workspace> --run <id>              — mark run as paused
+ralphx diff <workspace> [--stat]                  — show what the loop changed
 ralphx dry-run <workspace>                       — show resolved config + PRD without running
 ralphx import <file> <workspace>                 — parse markdown into prd.json
 ralphx workflow save <name> <workspace>          — save workspace config as template
 ralphx workflow use <name> <workspace>           — apply template to workspace
 ralphx workflow list                             — list saved templates
+ralphx --agent-help                              — detailed workspace setup guide for agents
 ```
 
 ## Convergence model

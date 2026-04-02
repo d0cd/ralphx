@@ -12,7 +12,7 @@ function getWorkflowsDir(): string {
 export function saveWorkflow(name: string, wsDir: string): void {
   validatePathSegment(name, 'Workflow name');
   if (!existsSync(wsDir)) {
-    throw new Error('Workspace directory not found. Run `ralphx init <workspace>` first.');
+    throw new Error('Workspace directory not found. Create workspace files first (see `ralphx --agent-help`).');
   }
 
   const destDir = join(getWorkflowsDir(), name);

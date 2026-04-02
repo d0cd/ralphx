@@ -17,11 +17,9 @@ Requires Node.js >= 18 and [Claude Code CLI](https://docs.anthropic.com/en/docs/
 ```bash
 cd your-repo
 
-# Create a workspace
-ralphx init audit
-
-# Edit .ralphx/audit/prd.json with your stories
-# Edit .ralphx/audit/PROMPT.md with loop instructions
+# Create workspace files (see ralphx --agent-help for full schema)
+mkdir -p .ralphx/audit
+# Create prd.json with stories, PROMPT.md with loop instructions
 
 # Run the loop
 ralphx run audit --max-iterations 20 --max-cost 5.00
@@ -32,14 +30,14 @@ ralphx cost audit
 ralphx logs audit
 ```
 
+For detailed workspace setup instructions: `ralphx --agent-help`
+
 ## Workspaces
 
 Every command takes a workspace name. Each workspace is an independent environment with its own PRD, prompt, config, and run history.
 
 ```bash
 # Run multiple independent loops on the same repo
-ralphx init dev
-ralphx init audit
 ralphx run dev &
 ralphx run audit
 ```
@@ -49,24 +47,22 @@ Workspace layout:
 .ralphx/<workspace>/
 ├── prd.json       Task definitions and acceptance criteria
 ├── PROMPT.md      Instructions for the coding loop
-├── AGENT.md       Repo-specific agent guidance
-├── .ralphxrc      Configuration (budget, timeouts, etc.)
-├── progress.md    Loop-managed progress tracking (created/deleted by runs)
-└── runs/          Run history (one subdirectory per run)
+├── AGENT.md       Repo-specific agent guidance (optional)
+├── .ralphxrc      Configuration overrides (optional)
+└── runs/          Run history (created automatically)
 ```
 
 ## How It Works
 
 1. **Define stories** in `.ralphx/<workspace>/prd.json` with acceptance criteria
 2. **Run the loop** -- ralphx iterates through stories, invoking the agent for each
-3. **Quality gates** validate results after each agent run (tests, type checks, protected paths)
+3. **Quality gates** run once at end of each round (tests, type checks)
 4. **Convergence** -- stories are re-evaluated each round; the loop exits when all pass or no progress is made
 5. **Circuit breakers** trip on repeated failures to prevent runaway costs
 
 ## CLI Commands
 
 ```
-ralphx init <workspace>                          Create a new workspace
 ralphx run <workspace> [options]                 Start the coding loop
   --prompt "..."                                 Prepend text to loop prompt
   --context-mode fresh|continue                  Context strategy
@@ -81,25 +77,27 @@ ralphx logs <workspace> [--run <id>] [-n lines]  Tail loop log
 ralphx cost <workspace> [--run <id>]             Show cost breakdown
 ralphx hint <workspace> "message" --run <id>     Inject a hint for next iteration
 ralphx pause <workspace> --run <id>              Request a running loop to pause
+ralphx diff <workspace> [--stat]                  Show what the loop changed
 ralphx dry-run <workspace>                       Preview resolved config without running
 ralphx import <file> <workspace>                 Parse markdown into prd.json
 ralphx workflow save <name> <workspace>          Save workspace config as template
 ralphx workflow use <name> <workspace>           Apply template to workspace
 ralphx workflow list                             List saved templates
+ralphx --agent-help                              Detailed setup guide for AI agents
 ```
 
 ## Configuration
 
 Configuration resolves as: CLI flags > environment variables > `.ralphx/<workspace>/.ralphxrc` > defaults.
 
-See `.ralphx/<workspace>/.ralphxrc` after `ralphx init` for available options.
+Run `ralphx --agent-help` for all available config fields and defaults.
 
 ## Safety
 
 - **Budget limits** -- max iterations, max cost, per-iteration timeout
 - **Circuit breakers** -- trip on no-progress or repeated errors
 - **Protected paths** -- flag modifications to critical files as warnings for human review
-- **Quality gates** -- run tests and type checks after each iteration
+- **Quality gates** -- run tests and type checks at end of each round
 - **Docker isolation** -- designed to run inside containers
 
 ## License
